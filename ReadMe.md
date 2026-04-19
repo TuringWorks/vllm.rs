@@ -44,7 +44,7 @@ A blazing-fast ⚡, lightweight **Rust** 🦀 implementation of vLLM.
 | **GLM4.7 Flash** | NVFP4 | **30B (MoE)**| **79** tokens/s (**Hopper**)  |
 | **Gemma4-31B** | ISQ (BF16->Q4K) | **31B (Dense)**| **41** tokens/s (**Hopper**)  |
 | **Gemma4-26B-A4B** | NVFP4 | **26B (MoE)**| **82** tokens/s (**Hopper**)  |
-| **MiniMax-M2.5** | NVFP4 | **229B (MoE)**| **49** tokens/s (**Hopper, TP=2**)  |
+| **MiniMax-M2.5** | NVFP4 | **229B (MoE)**| **62** tokens/s (**Hopper, TP=2**)  |
 
 > **Metal (Apple Silicon, M4)**
   <details>
