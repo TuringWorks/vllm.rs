@@ -1292,6 +1292,7 @@ pub fn init_config_tokenizer(
                     | "Qwen3_5MoeForConditionalGeneration"
                     | "Qwen3NextForCausalLM"
                     | "Qwen3NextForConditionalGeneration"
+                    | "MiniMaxM2ForCausalLM"
             )
         {
             if let Ok(raw_cfg) = std::fs::read(&config_path) {
@@ -1312,6 +1313,9 @@ pub fn init_config_tokenizer(
                             Some(moe_cfg.moe_intermediate_size);
                     }
                 }
+            }
+            if arch_name == "MiniMaxM2ForCausalLM" {
+                moe_cfg.norm_topk_prob = true;
             }
         }
 
@@ -1752,6 +1756,8 @@ pub fn get_arch_rope(
         ("Gemma4ForConditionalGeneration", false),
         ("Gemma4ForCausalLM", false),
         ("gemma4", false),
+        ("MiniMaxM2ForCausalLM", false),
+        ("minimax_m2", false),
     ]
     .iter()
     .cloned()
@@ -1851,6 +1857,10 @@ pub fn get_arch_rope(
         "Gemma4ForConditionalGeneration" | "Gemma4ForCausalLM" | "gemma4" => (
             ModelType::Gemma4,
             "<|turn>user\n{}<turn|>\n<|turn>model\n".to_string(),
+        ),
+        "MiniMaxM2ForCausalLM" | "minimax_m2" => (
+            ModelType::MiniMax,
+            "<|im_start|>user\n {} <|im_end|>".to_string(),
         ),
         _ => candle_core::bail!("Unsupported architecture: {}", architectures),
     };
