@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>xInfer — Blazing-fast LLM Inference in Pure Rust</title>
+<meta name="description" content="High-performance LLM inference engine in pure Rust. No PyTorch. CUDA &amp; Metal. 175+ tok/s.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><text y='20' font-size='20'>⚡</text></svg>">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --c-bg:#06080f;--c-bg2:#0c1021;--c-card:rgba(255,255,255,.035);--c-card-h:rgba(255,255,255,.06);
+  --c-border:rgba(255,255,255,.07);--c-border-h:rgba(255,255,255,.14);
+  --c-text:#dfe5f0;--c-dim:#6b7a94;--c-accent:#38bdf8;--c-accent2:#818cf8;--c-accent3:#c084fc;
+  --grad:linear-gradient(135deg,#38bdf8,#818cf8,#c084fc);
+  --grad-t:linear-gradient(135deg,#7dd3fc 0%,#93c5fd 30%,#a78bfa 60%,#e879f9 100%);
+  --font:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  --mono:'JetBrains Mono','Fira Code','SF Mono',Consolas,monospace;
+  --nav:60px;--r:10px;
+}
+html{scroll-behavior:smooth;scroll-padding-top:calc(var(--nav) + 20px)}
+body{font-family:var(--font);background:var(--c-bg);color:var(--c-text);line-height:1.6;overflow-x:hidden;-webkit-font-smoothing:antialiased}
+a{color:inherit;text-decoration:none}
+button{font:inherit;cursor:pointer;border:0;background:0 0;color:inherit}
+img{max-width:100%;display:block}
+.wrap{max-width:1100px;margin:0 auto;padding:0 20px}
+section{padding:80px 0;position:relative;z-index:1}
+.label{font-size:.7rem;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--c-accent);margin-bottom:10px}
+.stitle{font-size:clamp(1.6rem,3.6vw,2.3rem);font-weight:800;line-height:1.15;margin-bottom:12px}
+.sdesc{color:var(--c-dim);max-width:520px;margin-bottom:40px;font-size:.95rem}
+.gt{background:var(--grad-t);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+
+/* --- BG --- */
+.bg-grid{position:fixed;inset:0;z-index:0;pointer-events:none;
+  background-image:linear-gradient(rgba(255,255,255,.025) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.025) 1px,transparent 1px);
+  background-size:56px 56px;
+  mask-image:radial-gradient(ellipse 70% 50% at 50% 0%,#000 30%,transparent 72%)}
+.orb{position:fixed;border-radius:50%;filter:blur(110px);opacity:.3;pointer-events:none;z-index:0}
+.orb-1{width:550px;height:550px;background:#3b82f6;top:-220px;left:-120px}
+.orb-2{width:420px;height:420px;background:#a855f7;top:45%;right:-180px}
+.orb-3{width:340px;height:340px;background:#22d3ee;bottom:-80px;left:25%}
+
+/* --- NAV --- */
+nav{position:fixed;top:0;left:0;right:0;height:var(--nav);z-index:100;display:flex;align-items:center;
+  background:rgba(6,8,15,.55);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border-bottom:1px solid transparent;transition:.3s}
+nav.scrolled{background:rgba(6,8,15,.92);border-color:var(--c-border)}
+.nav-in{display:flex;align-items:center;justify-content:space-between;width:100%;max-width:1100px;margin:0 auto;padding:0 20px}
+.logo{display:flex;align-items:center;gap:7px;font-weight:700;font-size:1.15rem}
+.logo-icon{width:20px;height:20px;display:inline-block}
+.nlinks{display:flex;align-items:center;gap:24px}
+.nlinks a{font-size:.82rem;color:var(--c-dim);transition:.2s}.nlinks a:hover{color:var(--c-text)}
+.nact{display:flex;align-items:center;gap:10px}
+.lbtn{padding:5px 11px;border-radius:7px;font-size:.75rem;font-weight:600;border:1px solid var(--c-border);transition:.2s}
+.lbtn:hover,.lbtn.on{background:var(--c-card-h);border-color:var(--c-border-h)}
+.ghb{display:inline-flex;align-items:center;gap:5px;padding:6px 13px;border-radius:7px;font-size:.78rem;font-weight:500;
+  background:var(--c-card);border:1px solid var(--c-border);transition:.2s}
+.ghb:hover{background:var(--c-card-h);border-color:var(--c-border-h)}
+.ghb svg{width:15px;height:15px}
+.mbtn{display:none;padding:6px}
+.mnav{display:none;position:fixed;top:var(--nav);left:0;right:0;background:rgba(6,8,15,.96);backdrop-filter:blur(14px);
+  border-bottom:1px solid var(--c-border);padding:14px 20px;flex-direction:column;gap:14px;z-index:99}
+.mnav.open{display:flex}
+.mnav a{color:var(--c-dim);font-size:.88rem}
+
+/* --- HERO --- */
+.hero{min-height:100vh;display:flex;align-items:center;padding-top:var(--nav);position:relative;z-index:1}
+.hero-c{max-width:680px}
+.hero-tag{display:inline-flex;align-items:center;gap:7px;padding:5px 13px;border-radius:99px;
+  background:var(--c-card);border:1px solid var(--c-border);font-size:.77rem;color:var(--c-dim);margin-bottom:24px;
+  opacity:0;animation:fu .6s .1s forwards}
+.hero-tag em{font-style:normal;color:var(--c-accent)}
+.hero h1{font-size:clamp(2rem,5vw,3.2rem);font-weight:800;line-height:1.08;margin-bottom:18px;letter-spacing:-.025em}
+.hero h1 .ln{display:block;opacity:0;animation:fu .7s forwards}
+.hero h1 .ln:nth-child(1){animation-delay:.2s}
+.hero h1 .ln:nth-child(2){animation-delay:.35s}
+.hero-p{font-size:clamp(.92rem,1.8vw,1.1rem);color:var(--c-dim);margin-bottom:32px;max-width:500px;opacity:0;animation:fu .7s .5s forwards}
+
+.hero-cmd{margin-bottom:24px;opacity:0;animation:fu .7s .65s forwards}
+.hero-alt{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:32px;opacity:0;animation:fu .7s .78s forwards}
+.hero-alt code{font-size:.8rem;color:var(--c-dim);font-family:var(--mono);padding:5px 11px;border-radius:7px;background:var(--c-card);border:1px solid var(--c-border)}
+.hero-btns{display:flex;flex-wrap:wrap;gap:12px;opacity:0;animation:fu .7s .88s forwards}
+.bp,.bs{display:inline-flex;align-items:center;gap:7px;padding:11px 22px;border-radius:9px;font-size:.88rem;font-weight:600;transition:.25s}
+.bp{background:var(--grad);color:#fff;box-shadow:0 4px 20px rgba(56,189,248,.3)}
+.bp:hover{transform:translateY(-2px);box-shadow:0 8px 28px rgba(56,189,248,.4)}
+.bs{background:var(--c-card);border:1px solid var(--c-border)}.bs:hover{background:var(--c-card-h);border-color:var(--c-border-h)}
+
+/* --- CODE --- */
+.cb{position:relative;border-radius:var(--r);background:#0d1117;border:1px solid var(--c-border);overflow:hidden;
+  box-shadow:0 6px 24px rgba(0,0,0,.35);transition:.3s}
+.cb:hover{box-shadow:0 0 20px rgba(56,189,248,.12),0 6px 24px rgba(0,0,0,.35)}
+.cb-h{display:flex;align-items:center;justify-content:space-between;padding:9px 14px;background:rgba(255,255,255,.025);border-bottom:1px solid var(--c-border)}
+.cb-dots{display:flex;gap:5px}.cb-dots i{width:9px;height:9px;border-radius:50%;display:block}
+.cb-dots i:nth-child(1){background:#ff5f57}.cb-dots i:nth-child(2){background:#febc2e}.cb-dots i:nth-child(3){background:#28c840}
+.cb-t{font-size:.72rem;color:var(--c-dim)}
+.cpb{padding:3px 9px;border-radius:5px;font-size:.72rem;color:var(--c-dim);border:1px solid var(--c-border);transition:.2s}
+.cpb:hover{color:var(--c-text);background:var(--c-card-h)}
+.cpb.ok{color:var(--c-accent);border-color:var(--c-accent)}
+.cb-b{padding:14px 18px;overflow-x:auto}
+.cb-b pre{margin:0;font-family:var(--mono);font-size:.82rem;line-height:1.7;white-space:pre-wrap;word-break:break-all}
+.t-c{color:#79c0ff}.t-f{color:#ffa657}.t-s{color:#a5d6ff}.t-x{color:#8b949e}.t-g{color:#7ee787}
+
+/* --- FEATURES --- */
+.fgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.fcard{padding:24px;border-radius:var(--r);background:var(--c-card);border:1px solid var(--c-border);
+  backdrop-filter:blur(10px);transition:.3s;opacity:0;transform:translateY(28px)}
+.fcard.vis{opacity:1;transform:translateY(0);transition:opacity .5s,transform .5s}
+.fcard:hover{transform:translateY(-3px);border-color:var(--c-border-h);background:var(--c-card-h)}
+.fcard .icon{font-size:1.6rem;margin-bottom:14px;display:block}
+.fcard h3{font-size:.98rem;font-weight:600;margin-bottom:6px}
+.fcard p{font-size:.83rem;color:var(--c-dim);line-height:1.5}
+
+/* --- TABLE --- */
+.tw{overflow-x:auto;border-radius:var(--r);border:1px solid var(--c-border);background:var(--c-card);backdrop-filter:blur(10px)}
+table{width:100%;border-collapse:collapse;font-size:.84rem}
+thead{background:rgba(255,255,255,.035)}
+th,td{padding:12px 16px;text-align:left;border-bottom:1px solid var(--c-border)}
+th{font-weight:600;color:var(--c-dim);font-size:.72rem;text-transform:uppercase;letter-spacing:.05em}
+tr:last-child td{border-bottom:0}
+tbody tr{transition:.2s}tbody tr:hover{background:rgba(255,255,255,.025)}
+.sv{font-weight:700;color:var(--c-accent);font-variant-numeric:tabular-nums}
+
+/* --- BADGES --- */
+.badges{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:20px}
+.bdg{padding:7px 14px;border-radius:99px;font-size:.78rem;font-weight:500;background:var(--c-card);border:1px solid var(--c-border);transition:.2s}
+.bdg:hover{border-color:var(--c-border-h);background:var(--c-card-h)}
+.bdg.hi{border-color:rgba(56,189,248,.25);background:rgba(56,189,248,.06)}
+.fl{font-size:.78rem;color:var(--c-dim);margin-bottom:8px;font-weight:500}
+
+/* --- TABS --- */
+.tabs{display:flex;gap:3px;margin-bottom:20px;flex-wrap:wrap}
+.tbtn{padding:9px 16px;border-radius:7px;font-size:.82rem;font-weight:500;color:var(--c-dim);border:1px solid transparent;transition:.2s}
+.tbtn:hover{color:var(--c-text);background:var(--c-card)}
+.tbtn.on{color:var(--c-text);background:var(--c-card);border-color:var(--c-border)}
+.tpanel{display:none}.tpanel.on{display:block;animation:fi .3s}
+.trec{font-size:.65rem;padding:2px 7px;border-radius:3px;background:rgba(56,189,248,.12);color:var(--c-accent);margin-left:5px;vertical-align:middle}
+
+/* --- DOWNLOADS --- */
+.dgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:14px}
+.dcard{padding:18px;border-radius:var(--r);background:var(--c-card);border:1px solid var(--c-border);
+  backdrop-filter:blur(10px);transition:.25s;opacity:0;transform:translateY(20px)}
+.dcard.vis{opacity:1;transform:translateY(0);transition:opacity .5s,transform .5s}
+.dcard:hover{border-color:rgba(56,189,248,.25);transform:translateY(-2px)}
+.dcard h4{font-size:.9rem;font-weight:600;margin-bottom:3px}
+.dcard p{font-size:.77rem;color:var(--c-dim);margin-bottom:6px}
+.dcard .dl-file{display:block;font-size:.68rem;font-family:var(--mono);color:var(--c-dim);margin-bottom:10px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.7}
+.dcard .dl{font-size:.78rem;color:var(--c-accent);font-weight:500}
+.dtabs{display:flex;gap:3px;margin-bottom:16px;flex-wrap:wrap}
+.pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:10px;margin-top:20px}
+.pitem{padding:10px 14px;border-radius:7px;background:#0d1117;border:1px solid var(--c-border);font-family:var(--mono);
+  font-size:.72rem;word-break:break-all;position:relative;display:flex;align-items:center;justify-content:space-between;gap:8px}
+.pitem code{flex:1;overflow:hidden;text-overflow:ellipsis}
+.pitem .cpb{flex-shrink:0}
+
+/* --- DOCS --- */
+.dogrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px}
+.dolink{display:flex;align-items:center;gap:9px;padding:14px 16px;border-radius:var(--r);
+  background:var(--c-card);border:1px solid var(--c-border);font-size:.84rem;font-weight:500;transition:.2s}
+.dolink:hover{border-color:var(--c-border-h);background:var(--c-card-h);transform:translateX(3px)}
+.dolink::before{content:'→';color:var(--c-dim);flex-shrink:0;font-size:.8rem}
+
+/* --- FOOTER --- */
+footer{padding:56px 0 28px;border-top:1px solid var(--c-border);position:relative;z-index:1}
+.foot-in{display:flex;flex-wrap:wrap;justify-content:space-between;gap:28px;margin-bottom:32px}
+.foot-brand .logo{margin-bottom:6px}
+.foot-tag{font-size:.84rem;color:var(--c-dim)}
+.foot-links{display:flex;gap:20px}
+.foot-links a{font-size:.84rem;color:var(--c-dim);transition:.2s}.foot-links a:hover{color:var(--c-text)}
+.foot-bot{text-align:center;font-size:.77rem;color:var(--c-dim);padding-top:20px;border-top:1px solid var(--c-border)}
+
+/* --- ANIM --- */
+@keyframes fu{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:translateY(0)}}
+@keyframes fi{from{opacity:0}to{opacity:1}}
+.rv{opacity:0;transform:translateY(24px);transition:opacity .55s,transform .55s}
+.rv.vis{opacity:1;transform:translateY(0)}
+
+/* --- RESPONSIVE --- */
+@media(max-width:860px){
+  .fgrid{grid-template-columns:repeat(2,1fr)}
+  .nlinks{display:none}.mbtn{display:block}
+}
+@media(max-width:560px){
+  .fgrid{grid-template-columns:1fr}
+  section{padding:60px 0}
+  .hero-btns{flex-direction:column}.bp,.bs{justify-content:center;width:100%}
+  th,td{padding:9px 10px;font-size:.78rem}
+}
+</style>
+</head>
+<body>
+<div class="bg-grid"></div>
+<div class="orb orb-1"></div>
+<div class="orb orb-2"></div>
+<div class="orb orb-3"></div>
+
+<!-- NAV -->
+<nav id="nav">
+  <div class="nav-in">
+    <a href="#" class="logo">
+      <svg class="logo-icon" viewBox="0 0 24 24" fill="none"><path d="M13 2L3 14h8l-1 8 10-12h-8l1-8z" fill="url(#g1)"/><defs><linearGradient id="g1" x1="3" y1="2" x2="20" y2="22"><stop stop-color="#38bdf8"/><stop offset="1" stop-color="#c084fc"/></linearGradient></defs></svg>
+      xInfer
+    </a>
+    <div class="nlinks">
+      <a href="#features" data-i="nav.feat">Features</a>
+      <a href="#perf" data-i="nav.perf">Performance</a>
+      <a href="#install" data-i="nav.inst">Install</a>
+      <a href="#dl" data-i="nav.dl">Downloads</a>
+      <a href="#docs" data-i="nav.docs">Docs</a>
+    </div>
+    <div class="nact">
+      <button class="lbtn on" id="b-en">EN</button>
+      <button class="lbtn" id="b-cn">中文</button>
+      <a href="https://github.com/guoqingbao/xinfer" target="_blank" class="ghb">
+        <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        GitHub
+      </a>
+      <button class="mbtn" id="mbtn"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg></button>
+    </div>
+  </div>
+</nav>
+<div class="mnav" id="mnav">
+  <a href="#features" data-i="nav.feat">Features</a>
+  <a href="#perf" data-i="nav.perf">Performance</a>
+  <a href="#install" data-i="nav.inst">Install</a>
+  <a href="#dl" data-i="nav.dl">Downloads</a>
+  <a href="#docs" data-i="nav.docs">Docs</a>
+</div>
+
+<!-- HERO -->
+<section class="hero">
+  <div class="wrap">
+    <div class="hero-c">
+      <div class="hero-tag"><em>⚡</em> <span data-i="hero.tag">Pure Rust · Production Ready</span></div>
+      <h1>
+        <span class="ln gt" data-i="hero.t1">Blazing-fast LLM Inference</span>
+        <span class="ln gt" data-i="hero.t2">in Pure Rust</span>
+      </h1>
+      <p class="hero-p" data-i="hero.sub">No PyTorch. No Python runtime. Just fast, portable, production-ready inference.</p>
+      <div class="hero-cmd">
+        <div class="cb" data-cp="curl -sSL https://guoqingbao.github.io/xinfer/install.sh | bash">
+          <div class="cb-h"><div class="cb-dots"><i></i><i></i><i></i></div><span class="cb-t" data-i="hero.term">terminal</span><button class="cpb" data-i="cp">Copy</button></div>
+          <div class="cb-b"><pre><span class="t-g">$</span> <span class="t-c">curl</span> <span class="t-f">-sSL</span> <span class="t-s">https://guoqingbao.github.io/xinfer/install.sh</span> | <span class="t-c">bash</span></pre></div>
+        </div>
+      </div>
+      <div class="hero-alt">
+        <code>npm install -g xinfer-ai</code>
+      </div>
+      <div class="hero-btns">
+        <a href="#install" class="bp" data-i="hero.cta1">Get Started</a>
+        <a href="https://github.com/guoqingbao/xinfer" target="_blank" class="bs" data-i="hero.cta2">View on GitHub →</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FEATURES -->
+<section id="features">
+  <div class="wrap">
+    <p class="label rv" data-i="f.label">Features</p>
+    <h2 class="stitle rv gt" data-i="f.title">Built for Speed &amp; Simplicity</h2>
+    <p class="sdesc rv" data-i="f.desc">Everything you need for production LLM inference — without the Python baggage.</p>
+    <div class="fgrid">
+      <div class="fcard" data-d="0"><span class="icon">🦀</span><h3 data-i="f.1t">Zero Dependencies</h3><p data-i="f.1d">Pure Rust backend — no PyTorch, no CUDA Python bindings, no Python runtime.</p></div>
+      <div class="fcard" data-d="70"><span class="icon">⚡</span><h3 data-i="f.2t">Blazing Fast</h3><p data-i="f.2d">Flash Attention, FlashInfer, CUDA Graphs, continuous batching. Up to 175+ tok/s.</p></div>
+      <div class="fcard" data-d="140"><span class="icon">🪶</span><h3 data-i="f.3t">Tiny Footprint</h3><p data-i="f.3d">Core scheduling &amp; attention logic in under 5,000 lines of Rust.</p></div>
+      <div class="fcard" data-d="210"><span class="icon">🌍</span><h3 data-i="f.4t">Cross-Platform</h3><p data-i="f.4d">CUDA on Linux, Metal on macOS. Same binary, same API everywhere.</p></div>
+      <div class="fcard" data-d="280"><span class="icon">🏭</span><h3 data-i="f.5t">Production Ready</h3><p data-i="f.5d">OpenAI &amp; Anthropic APIs, built-in Web UI, MCP tool calling, structured outputs.</p></div>
+      <div class="fcard" data-d="350"><span class="icon">🗜️</span><h3 data-i="f.6t">KV Compression</h3><p data-i="f.6d">TurboQuant 2–4 bit KV cache extends context up to 4.3× with minimal quality loss.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- PERFORMANCE -->
+<section id="perf">
+  <div class="wrap">
+    <p class="label rv" data-i="p.label">Performance</p>
+    <h2 class="stitle rv gt" data-i="p.title">Real-World Benchmarks</h2>
+    <p class="sdesc rv" data-i="p.desc">Tested on V100, A100, Hopper H800, and RTX 5090.</p>
+    <div class="tw rv">
+      <table>
+        <thead><tr><th data-i="p.m">Model</th><th data-i="p.fmt">Format</th><th data-i="p.sz">Size</th><th data-i="p.hw">Hardware</th><th data-i="p.sp">Speed</th><th data-i="p.note">Note</th></tr></thead>
+        <tbody>
+          <tr><td>Qwen3-30B-A3B</td><td>NVFP4</td><td>30B MoE</td><td>RTX 5090 (SM120)</td><td><span class="sv" data-n="175.30">0</span> tok/s</td><td data-i="p.n1">HW NVFP4</td></tr>
+          <tr><td>Gemma4-26B-A4B</td><td>NVFP4</td><td>26B MoE</td><td>RTX 5090 (SM120)</td><td><span class="sv" data-n="131">0</span> tok/s</td><td data-i="p.n1">HW NVFP4</td></tr>
+          <tr><td>Qwen3.6-35B-A3B</td><td>FP8</td><td>35B MoE</td><td>H800 (SM90)</td><td><span class="sv" data-n="102">0</span> tok/s</td><td data-i="p.n2">HW FP8</td></tr>
+          <tr><td>DeepSeek-R1-Qwen3-8B</td><td>Q4_K_M</td><td>8B</td><td>A100 (SM80)</td><td><span class="sv" data-n="124.87">0</span> tok/s</td><td>GGUF</td></tr>
+          <tr><td>Llama-3.1-8B</td><td>ISQ Q4K</td><td>8B</td><td>A100 (SM80)</td><td><span class="sv" data-n="120.74">0</span> tok/s</td><td data-i="p.n3">SW quant</td></tr>
+          <tr><td>MiniMax-M2.5</td><td>NVFP4</td><td>229B MoE</td><td>H800 ×2 (SM90)</td><td><span class="sv" data-n="62">0</span> tok/s</td><td data-i="p.n4">SW NVFP4 (no HW)</td></tr>
+          <tr><td>Qwen3-30B-A3B</td><td>NVFP4</td><td>30B MoE</td><td>V100 (SM70)</td><td><span class="sv" data-n="67.10">0</span> tok/s</td><td data-i="p.n5">SW FP4</td></tr>
+          <tr><td>Qwen3.6-27B</td><td>FP8</td><td>27B Dense</td><td>H800 (SM90)</td><td><span class="sv" data-n="42">0</span> tok/s</td><td data-i="p.n2">HW FP8</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="sdesc rv" style="margin-top:16px;font-size:.8rem;max-width:none" data-i="p.fn">* HW = hardware-accelerated. Hopper (SM90) supports HW FP8 but not HW NVFP4; Blackwell (SM120) supports both. NVFP4 on Hopper uses software emulation.</p>
+  </div>
+</section>
+
+<!-- MODELS -->
+<section id="models">
+  <div class="wrap">
+    <p class="label rv" data-i="m.label">Models</p>
+    <h2 class="stitle rv gt" data-i="m.title">Supported Models &amp; Formats</h2>
+    <p class="sdesc rv" data-i="m.desc">From 3B to 397B — dense, MoE, and multimodal architectures.</p>
+    <div class="badges rv">
+      <span class="bdg hi">LLaMA 4</span><span class="bdg">Qwen3</span><span class="bdg">Qwen3.5</span><span class="bdg">Qwen3.6</span>
+      <span class="bdg">DeepSeek V3</span><span class="bdg">DeepSeek R1</span><span class="bdg">Gemma 3</span><span class="bdg hi">Gemma 4</span>
+      <span class="bdg">GLM4</span><span class="bdg">GLM4.7 Flash</span><span class="bdg">Phi4</span><span class="bdg">Mistral 3 VL</span><span class="bdg">MiniMax M2.5</span>
+    </div>
+    <p class="fl rv" data-i="m.fmts">Supported Formats</p>
+    <div class="badges rv">
+      <span class="bdg">Safetensors</span><span class="bdg">GGUF</span><span class="bdg hi">FP8</span><span class="bdg hi">NVFP4</span>
+      <span class="bdg">MXFP4</span><span class="bdg">GPTQ</span><span class="bdg">AWQ</span><span class="bdg">ISQ</span>
+    </div>
+  </div>
+</section>
+
+<!-- INSTALL -->
+<section id="install">
+  <div class="wrap">
+    <p class="label rv" data-i="i.label">Quick Start</p>
+    <h2 class="stitle rv gt" data-i="i.title">Install &amp; Run</h2>
+    <p class="sdesc rv" data-i="i.desc">Get up and running in minutes.</p>
+    <div class="tabs rv">
+      <button class="tbtn on" data-t="tc"><span data-i="i.t1">One-line install</span><span class="trec" data-i="i.rec">recommended</span></button>
+      <button class="tbtn" data-t="tn" data-i="i.t2">npm</button>
+      <button class="tbtn" data-t="tb" data-i="i.t3">Build from source</button>
+      <button class="tbtn" data-t="tp" data-i="i.t4">Python wheel</button>
+      <button class="tbtn" data-t="td" data-i="i.t5">Docker</button>
+    </div>
+    <div id="tc" class="tpanel on rv">
+      <div class="cb" data-cp="curl -sSL https://guoqingbao.github.io/xinfer/install.sh | bash">
+        <div class="cb-h"><div class="cb-dots"><i></i><i></i><i></i></div><span class="cb-t">bash</span><button class="cpb" data-i="cp">Copy</button></div>
+        <div class="cb-b"><pre><span class="t-c">curl</span> <span class="t-f">-sSL</span> <span class="t-s">https://guoqingbao.github.io/xinfer/install.sh</span> | <span class="t-c">bash</span></pre></div>
+      </div>
+    </div>
+    <div id="tn" class="tpanel rv">
+      <div class="cb" data-cp="npm install -g xinfer-ai">
+        <div class="cb-h"><div class="cb-dots"><i></i><i></i><i></i></div><span class="cb-t">bash</span><button class="cpb" data-i="cp">Copy</button></div>
+        <div class="cb-b"><pre><span class="t-c">npm install</span> <span class="t-f">-g</span> <span class="t-s">xinfer-ai</span></pre></div>
+      </div>
+    </div>
+    <div id="tb" class="tpanel rv">
+      <div class="cb" data-cp="curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh&#10;sudo apt-get install -y git build-essential libssl-dev pkg-config&#10;export XINFER_REPO=&quot;https://github.com/guoqingbao/xinfer&quot;&#10;cargo install --git $XINFER_REPO xinfer --features cuda,nccl,flashinfer,cutlass">
+        <div class="cb-h"><div class="cb-dots"><i></i><i></i><i></i></div><span class="cb-t">bash</span><button class="cpb" data-i="cp">Copy</button></div>
+        <div class="cb-b"><pre><span class="t-x" data-i="i.pre"># Prerequisites: Rust, CUDA Toolkit (or Metal Xcode CLI)</span>
+<span class="t-c">curl</span> <span class="t-f">--proto</span> <span class="t-s">'=https'</span> <span class="t-f">--tlsv1.2</span> <span class="t-f">-sSf</span> <span class="t-s">https://sh.rustup.rs</span> | <span class="t-c">sh</span>
+<span class="t-c">sudo apt-get install</span> <span class="t-f">-y</span> <span class="t-s">git build-essential libssl-dev pkg-config</span>
+
+<span class="t-c">export</span> XINFER_REPO=<span class="t-s">"https://github.com/guoqingbao/xinfer"</span>
+<span class="t-x"># macOS/Metal: replace features with `metal`</span>
+<span class="t-x"># SM70/SM75 (V100): remove `flashinfer` and `cutlass`</span>
+<span class="t-c">cargo install</span> <span class="t-f">--git</span> <span class="t-s">$XINFER_REPO</span> xinfer <span class="t-f">--features</span> <span class="t-s">cuda,nccl,flashinfer,cutlass</span></pre></div>
+      </div>
+    </div>
+    <div id="tp" class="tpanel rv">
+      <div class="cb" data-cp="pip install maturin maturin[patchelf]&#10;./build.sh --release --features cuda,nccl,flashinfer,cutlass,python&#10;pip install target/wheels/xinfer*.whl --force-reinstall">
+        <div class="cb-h"><div class="cb-dots"><i></i><i></i><i></i></div><span class="cb-t">bash</span><button class="cpb" data-i="cp">Copy</button></div>
+        <div class="cb-b"><pre><span class="t-x" data-i="i.pw"># Build Python wheel from source</span>
+<span class="t-c">pip install</span> <span class="t-s">maturin maturin[patchelf]</span>
+
+<span class="t-x"># FlashInfer backend (SM80+)</span>
+<span class="t-c">./build.sh</span> <span class="t-f">--release</span> <span class="t-f">--features</span> <span class="t-s">cuda,nccl,flashinfer,cutlass,python</span>
+
+<span class="t-x"># macOS Metal</span>
+<span class="t-c">maturin build</span> <span class="t-f">--release</span> <span class="t-f">--features</span> <span class="t-s">metal,python</span>
+
+<span class="t-x" data-i="i.pi"># Install the wheel</span>
+<span class="t-c">pip install</span> <span class="t-s">target/wheels/xinfer*.whl</span> <span class="t-f">--force-reinstall</span></pre></div>
+      </div>
+    </div>
+    <div id="td" class="tpanel rv">
+      <div class="cb" data-cp="./build_docker.sh &quot;cuda,nccl,flashinfer,cutlass&quot;">
+        <div class="cb-h"><div class="cb-dots"><i></i><i></i><i></i></div><span class="cb-t">bash</span><button class="cpb" data-i="cp">Copy</button></div>
+        <div class="cb-b"><pre><span class="t-x"># SM70/SM75: remove `flashinfer` and `cutlass`</span>
+<span class="t-c">./build_docker.sh</span> <span class="t-s">"cuda,nccl,flashinfer,cutlass"</span></pre></div>
+      </div>
+    </div>
+    <h3 style="margin:36px 0 14px;font-size:1.05rem" class="rv" data-i="i.run">Run Examples</h3>
+    <div class="cb rv">
+      <div class="cb-h"><div class="cb-dots"><i></i><i></i><i></i></div><span class="cb-t">bash</span><button class="cpb" data-i="cp">Copy</button></div>
+      <div class="cb-b"><pre><span class="t-x" data-i="i.e1"># HuggingFace model with Web UI</span>
+<span class="t-c">xinfer</span> <span class="t-f">--m</span> <span class="t-s">Qwen/Qwen3.6-27B-FP8</span> <span class="t-f">--kvcache-dtype</span> <span class="t-s">turbo4</span> <span class="t-f">--ui-server</span>
+
+<span class="t-x" data-i="i.e2"># Multi-GPU with local model</span>
+<span class="t-c">xinfer</span> <span class="t-f">--w</span> <span class="t-s">/path/to/model</span> <span class="t-f">--d</span> <span class="t-s">0,1</span> <span class="t-f">--ui-server</span>
+
+<span class="t-x" data-i="i.e3"># Python mode</span>
+<span class="t-c">python3</span> <span class="t-f">-m</span> <span class="t-s">xinfer.server</span> <span class="t-f">--m</span> <span class="t-s">Qwen/Qwen3.6-27B-FP8</span> <span class="t-f">--ui-server</span></pre></div>
+    </div>
+  </div>
+</section>
+
+<!-- DOWNLOADS -->
+<section id="dl">
+  <div class="wrap">
+    <p class="label rv" data-i="d.label">Downloads</p>
+    <h2 class="stitle rv gt" data-i="d.title">Pre-built Packages</h2>
+    <p class="sdesc rv" data-i="d.desc">Pre-compiled binaries and pip wheels for every GPU architecture.</p>
+    <h3 style="margin-bottom:14px;font-size:.95rem" class="rv" data-i="d.bin">Binary Downloads</h3>
+    <div class="dtabs rv">
+      <button class="tbtn on" data-dt="deb" data-i="d.deb">Deb Package</button>
+      <button class="tbtn" data-dt="tar" data-i="d.tar">Tarball</button>
+      <button class="tbtn" data-dt="whl" data-i="d.whl">Python Wheel</button>
+    </div>
+    <div class="dgrid" id="dcards"></div>
+    <h3 style="margin:36px 0 14px;font-size:.95rem" class="rv" data-i="d.pip">Pre-built Python Wheels (pip)</h3>
+    <div class="pgrid rv" id="pgrid"></div>
+  </div>
+</section>
+
+<!-- KV CACHE -->
+<section id="kv">
+  <div class="wrap">
+    <p class="label rv" data-i="k.label">KV Cache</p>
+    <h2 class="stitle rv gt" data-i="k.title">TurboQuant Compression</h2>
+    <p class="sdesc rv" data-i="k.desc">Extend context length up to 4.3× with --kvcache-dtype.</p>
+    <div class="tw rv">
+      <table>
+        <thead><tr><th data-i="k.cm">Mode (--kvcache-dtype)</th><th data-i="k.cc">Compression</th><th data-i="k.cq">Quality</th><th>GPU</th></tr></thead>
+        <tbody>
+          <tr><td>default (BF16)</td><td>1×</td><td data-i="k.q1">Baseline</td><td>All</td></tr>
+          <tr><td>fp8</td><td><strong>2×</strong></td><td data-i="k.q2">Near-lossless</td><td>SM70+ / M1</td></tr>
+          <tr><td>turbo8</td><td><strong>2.6×</strong></td><td data-i="k.q3">High quality</td><td>SM70+ / M1</td></tr>
+          <tr><td>turbo4</td><td><strong>3.7×</strong></td><td data-i="k.q4">Best balance</td><td>SM70+ / M1</td></tr>
+          <tr><td>turbo3</td><td><strong>4.7×</strong></td><td data-i="k.q5">Max compression</td><td>SM70+</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- DOCS -->
+<section id="docs">
+  <div class="wrap">
+    <p class="label rv" data-i="do.label">Documentation</p>
+    <h2 class="stitle rv gt" data-i="do.title">Learn More</h2>
+    <p class="sdesc rv" data-i="do.desc">Guides, API references, and integration tutorials.</p>
+    <div class="dogrid rv">
+      <a href="https://github.com/guoqingbao/xinfer/blob/main/docs/get_started.md" target="_blank" class="dolink"><span data-i="do.1">Get Started</span></a>
+      <a href="https://github.com/guoqingbao/xinfer/blob/main/docs/docker.md" target="_blank" class="dolink"><span data-i="do.2">Docker</span></a>
+      <a href="https://github.com/guoqingbao/xinfer/blob/main/docs/performance.md" target="_blank" class="dolink"><span data-i="do.3">Performance</span></a>
+      <a href="https://github.com/guoqingbao/xinfer/blob/main/docs/prefix-cache.md" target="_blank" class="dolink"><span data-i="do.4">Prefix Cache</span></a>
+      <a href="https://github.com/guoqingbao/xinfer/blob/main/docs/multimodal.md" target="_blank" class="dolink"><span data-i="do.5">Multimodal</span></a>
+      <a href="https://github.com/guoqingbao/xinfer/blob/main/docs/embeddings.md" target="_blank" class="dolink"><span data-i="do.6">Embedding</span></a>
+      <a href="https://github.com/guoqingbao/xinfer/blob/main/docs/mcp_tool_calling.md" target="_blank" class="dolink"><span data-i="do.7">MCP Integration</span></a>
+      <a href="https://github.com/guoqingbao/xinfer/blob/main/docs/guided_decoding.md" target="_blank" class="dolink"><span data-i="do.8">Guided Decoding</span></a>
+      <a href="https://github.com/guoqingbao/xinfer/blob/main/docs/rust_crate.md" target="_blank" class="dolink"><span data-i="do.9">Rust Crate</span></a>
+      <a href="https://github.com/guoqingbao/xinfer/blob/main/docs/add_model.md" target="_blank" class="dolink"><span data-i="do.10">Add a Model</span></a>
+      <a href="https://github.com/guoqingbao/xinfer/blob/main/docs/tokenizer_api.md" target="_blank" class="dolink"><span data-i="do.11">Tokenizer API</span></a>
+      <a href="https://github.com/guoqingbao/xinfer/blob/main/docs/tool_parsing.md" target="_blank" class="dolink"><span data-i="do.12">Tool Parsing</span></a>
+    </div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer>
+  <div class="wrap">
+    <div class="foot-in">
+      <div class="foot-brand">
+        <div class="logo">⚡ xInfer</div>
+        <p class="foot-tag" data-i="ft.tag">Blazing-fast LLM inference in pure Rust.</p>
+      </div>
+      <div class="foot-links">
+        <a href="https://github.com/guoqingbao/xinfer" target="_blank">GitHub</a>
+        <a href="https://github.com/guoqingbao/xinfer/tree/main/docs" target="_blank" data-i="ft.docs">Documentation</a>
+        <a href="https://github.com/guoqingbao/xinfer/releases" target="_blank" data-i="ft.rel">Releases</a>
+      </div>
+    </div>
+    <div class="foot-bot">Made with Rust ❤️</div>
+  </div>
+</footer>
+
+<script>
+(function(){
+'use strict';
+
+/* ═══ i18n ═══ */
+var I={
+en:{
+'nav.feat':'Features','nav.perf':'Performance','nav.inst':'Install','nav.dl':'Downloads','nav.docs':'Docs',
+'hero.tag':'Pure Rust · Production Ready',
+'hero.t1':'Blazing-fast LLM Inference','hero.t2':'in Pure Rust',
+'hero.sub':'No PyTorch. No Python runtime. Just fast, portable, production-ready inference.',
+'hero.term':'terminal','hero.cta1':'Get Started','hero.cta2':'View on GitHub →',
+'cp':'Copy','cpd':'Copied!',
+'f.label':'Features','f.title':'Built for Speed & Simplicity',
+'f.desc':'Everything you need for production LLM inference — without the Python baggage.',
+'f.1t':'Zero Dependencies','f.1d':'Pure Rust backend — no PyTorch, no CUDA Python bindings, no Python runtime.',
+'f.2t':'Blazing Fast','f.2d':'Flash Attention, FlashInfer, CUDA Graphs, continuous batching. Up to 175+ tok/s.',
+'f.3t':'Tiny Footprint','f.3d':'Core scheduling & attention logic in under 5,000 lines of Rust.',
+'f.4t':'Cross-Platform','f.4d':'CUDA on Linux, Metal on macOS. Same binary, same API everywhere.',
+'f.5t':'Production Ready','f.5d':'OpenAI & Anthropic APIs, built-in Web UI, MCP tool calling, structured outputs.',
+'f.6t':'KV Compression','f.6d':'TurboQuant 2–4 bit KV cache extends context up to 4.3× with minimal quality loss.',
+'p.label':'Performance','p.title':'Real-World Benchmarks','p.desc':'Tested on V100, A100, Hopper H800, and RTX 5090.',
+'p.m':'Model','p.fmt':'Format','p.sz':'Size','p.hw':'Hardware','p.sp':'Speed','p.note':'Note',
+'p.n1':'HW NVFP4','p.n2':'HW FP8','p.n3':'SW quant','p.n4':'SW NVFP4 (no HW)','p.n5':'SW FP4',
+'p.fn':'* HW = hardware-accelerated. Hopper (SM90) supports HW FP8 but not HW NVFP4; Blackwell (SM120) supports both. NVFP4 on Hopper uses software emulation.',
+'m.label':'Models','m.title':'Supported Models & Formats',
+'m.desc':'From 3B to 397B — dense, MoE, and multimodal architectures.','m.fmts':'Supported Formats',
+'i.label':'Quick Start','i.title':'Install & Run','i.desc':'Get up and running in minutes.',
+'i.t1':'One-line install','i.t2':'npm','i.t3':'Build from source','i.t4':'Python wheel','i.t5':'Docker','i.rec':'recommended',
+'i.pre':'# Prerequisites: Rust, CUDA Toolkit (or Metal Xcode CLI)','i.pw':'# Build Python wheel from source','i.pi':'# Install the wheel',
+'i.run':'Run Examples','i.e1':'# HuggingFace model with Web UI','i.e2':'# Multi-GPU with local model','i.e3':'# Python mode',
+'d.label':'Downloads','d.title':'Pre-built Packages','d.desc':'Pre-compiled binaries and pip wheels for every GPU architecture.',
+'d.bin':'Binary Downloads','d.deb':'Deb Package','d.tar':'Tarball','d.whl':'Python Wheel',
+'d.pip':'Install via pip (per architecture)','d.go':'Download →',
+'k.label':'KV Cache','k.title':'TurboQuant Compression','k.desc':'Extend context length up to 4.3× with --kvcache-dtype.',
+'k.cm':'Mode (--kvcache-dtype)','k.cc':'Compression','k.cq':'Quality',
+'k.q1':'Baseline','k.q2':'Near-lossless','k.q3':'High quality','k.q4':'Best balance','k.q5':'Max compression',
+'do.label':'Documentation','do.title':'Learn More','do.desc':'Guides, API references, and integration tutorials.',
+'do.1':'Get Started','do.2':'Docker','do.3':'Performance','do.4':'Prefix Cache','do.5':'Multimodal',
+'do.6':'Embedding','do.7':'MCP Integration','do.8':'Guided Decoding','do.9':'Rust Crate',
+'do.10':'Add a Model','do.11':'Tokenizer API','do.12':'Tool Parsing',
+'ft.tag':'Blazing-fast LLM inference in pure Rust.','ft.docs':'Documentation','ft.rel':'Releases'
+},
+cn:{
+'nav.feat':'功能','nav.perf':'性能','nav.inst':'安装','nav.dl':'下载','nav.docs':'文档',
+'hero.tag':'纯 Rust · 生产就绪',
+'hero.t1':'纯 Rust 实现的','hero.t2':'极速 LLM 推理引擎',
+'hero.sub':'无需 PyTorch，无需 Python 运行时，开箱即用。',
+'hero.term':'终端','hero.cta1':'快速开始','hero.cta2':'查看 GitHub →',
+'cp':'复制','cpd':'已复制!',
+'f.label':'功能特性','f.title':'为速度与简洁而生',
+'f.desc':'生产级 LLM 推理所需的一切 — 无需 Python 依赖。',
+'f.1t':'零依赖','f.1d':'纯 Rust 后端 — 无需 PyTorch、CUDA Python 绑定或 Python 运行时。',
+'f.2t':'极速推理','f.2d':'Flash Attention、FlashInfer、CUDA Graphs、连续批处理。175+ tok/s。',
+'f.3t':'轻量核心','f.3d':'核心调度与注意力逻辑不足 5,000 行 Rust 代码。',
+'f.4t':'跨平台','f.4d':'Linux 上 CUDA，macOS 上 Metal。同一二进制，同一 API。',
+'f.5t':'生产就绪','f.5d':'OpenAI/Anthropic API、内置 Web UI、MCP 工具、结构化输出。',
+'f.6t':'KV 压缩','f.6d':'TurboQuant 2–4 bit KV 缓存，上下文扩展最高 4.3 倍。',
+'p.label':'性能','p.title':'真实基准测试','p.desc':'在 V100、A100、Hopper H800 和 RTX 5090 上测试。',
+'p.m':'模型','p.fmt':'格式','p.sz':'大小','p.hw':'硬件','p.sp':'速度','p.note':'说明',
+'p.n1':'硬件 NVFP4','p.n2':'硬件 FP8','p.n3':'软件量化','p.n4':'软件 NVFP4 (无硬件加速)','p.n5':'软件 FP4',
+'p.fn':'* HW = 硬件加速。Hopper (SM90) 支持硬件 FP8 但不支持硬件 NVFP4；Blackwell (SM120) 两者均支持。Hopper 上的 NVFP4 为软件模拟。',
+'m.label':'模型','m.title':'支持的模型与格式',
+'m.desc':'从 3B 到 397B — 稠密、MoE 和多模态架构。','m.fmts':'支持的格式',
+'i.label':'快速开始','i.title':'安装与运行','i.desc':'几分钟内即可运行。',
+'i.t1':'一行安装','i.t2':'npm','i.t3':'源码编译','i.t4':'Python wheel','i.t5':'Docker','i.rec':'推荐',
+'i.pre':'# 前置条件: Rust, CUDA Toolkit (或 Metal Xcode CLI)','i.pw':'# 从源码构建 Python wheel','i.pi':'# 安装 wheel',
+'i.run':'运行示例','i.e1':'# HuggingFace 模型 + Web UI','i.e2':'# 多卡本地模型','i.e3':'# Python 模式',
+'d.label':'下载','d.title':'预编译包','d.desc':'每种 GPU 架构的预编译二进制和 pip wheel。',
+'d.bin':'二进制下载','d.deb':'Deb 包','d.tar':'Tarball','d.whl':'Python Wheel',
+'d.pip':'通过 pip 安装 (按架构)','d.go':'下载 →',
+'k.label':'KV 缓存','k.title':'TurboQuant 压缩','k.desc':'使用 --kvcache-dtype 将上下文扩展最高 4.3 倍。',
+'k.cm':'模式 (--kvcache-dtype)','k.cc':'压缩比','k.cq':'质量',
+'k.q1':'基准','k.q2':'近无损','k.q3':'高质量','k.q4':'最佳平衡','k.q5':'最大压缩',
+'do.label':'文档','do.title':'了解更多','do.desc':'指南、API 参考和集成教程。',
+'do.1':'快速开始','do.2':'Docker','do.3':'性能','do.4':'前缀缓存','do.5':'多模态',
+'do.6':'嵌入','do.7':'MCP 集成','do.8':'引导解码','do.9':'Rust Crate',
+'do.10':'添加模型','do.11':'Tokenizer API','do.12':'工具解析',
+'ft.tag':'纯 Rust 实现的极速 LLM 推理引擎。','ft.docs':'文档','ft.rel':'发布'
+}};
+
+var lang=localStorage.getItem('xl')||'en';
+function setLang(l){
+  lang=l;localStorage.setItem('xl',l);
+  document.documentElement.lang=l==='cn'?'zh-CN':'en';
+  document.querySelectorAll('[data-i]').forEach(function(el){
+    var k=el.getAttribute('data-i');if(I[l][k])el.textContent=I[l][k];
+  });
+  document.getElementById('b-en').classList.toggle('on',l==='en');
+  document.getElementById('b-cn').classList.toggle('on',l==='cn');
+}
+document.getElementById('b-en').onclick=function(){setLang('en')};
+document.getElementById('b-cn').onclick=function(){setLang('cn')};
+setLang(lang);
+
+/* ═══ Nav scroll ═══ */
+var nv=document.getElementById('nav');
+window.addEventListener('scroll',function(){nv.classList.toggle('scrolled',window.scrollY>30)},{passive:true});
+
+/* ═══ Mobile menu ═══ */
+var mb=document.getElementById('mbtn'),mn=document.getElementById('mnav');
+mb.onclick=function(){mn.classList.toggle('open')};
+mn.querySelectorAll('a').forEach(function(a){a.onclick=function(){mn.classList.remove('open')}});
+
+/* ═══ Tabs ═══ */
+document.querySelectorAll('.tbtn').forEach(function(b){
+  b.onclick=function(){
+    document.querySelectorAll('.tbtn').forEach(function(x){x.classList.remove('on')});
+    document.querySelectorAll('.tpanel').forEach(function(x){x.classList.remove('on')});
+    b.classList.add('on');document.getElementById(b.dataset.t).classList.add('on');
+  };
+});
+
+/* ═══ Copy ═══ */
+document.querySelectorAll('.cb').forEach(function(bl){
+  var btn=bl.querySelector('.cpb');if(!btn)return;
+  btn.onclick=function(){
+    var txt=bl.dataset.cp||bl.querySelector('pre').textContent.replace(/^\$ /,'').trim();
+    navigator.clipboard.writeText(txt).then(function(){
+      btn.textContent=I[lang].cpd;btn.classList.add('ok');
+      setTimeout(function(){btn.textContent=I[lang].cp;btn.classList.remove('ok')},1800);
+    });
+  };
+});
+
+/* ═══ Download cards ═══ */
+var XINFER_VER='0.12.4';
+var DL='https://github.com/guoqingbao/xinfer/releases/download/v'+XINFER_VER+'/';
+var archs=[
+  {sm:'sm70',n:'70',name:'SM70',gpu:'V100',cuda:'CUDA 12',d:0},
+  {sm:'sm75',n:'75',name:'SM75',gpu:'T4 / Turing',cuda:'CUDA 12',d:50},
+  {sm:'sm80',n:'80',name:'SM80',gpu:'A100 / A10',cuda:'CUDA 13',d:100},
+  {sm:'sm89',n:'89',name:'SM89',gpu:'RTX 4090 / L40',cuda:'CUDA 13',d:150},
+  {sm:'sm90',n:'90',name:'SM90',gpu:'H800 / H200',cuda:'CUDA 13',d:200},
+  {sm:'sm120',n:'120',name:'SM120',gpu:'RTX 5090 / B200',cuda:'CUDA 13',d:250}
+];
+var metalA={sm:'metal',n:'metal',name:'Metal',gpu:'macOS Apple Silicon',cuda:'',d:300};
+var dcards=document.getElementById('dcards');
+
+function renderDCards(type){
+  dcards.innerHTML='';
+  var items=archs.slice();
+  if(type!=='deb')items.push(metalA);
+  items.forEach(function(a){
+    var fname;
+    if(type==='deb'){
+      fname='xinfer-linux-x64-'+a.sm+'.deb';
+    }else if(type==='tar'){
+      fname=a.sm==='metal'?'xinfer-'+XINFER_VER+'-darwin-arm64-metal.tar.gz':'xinfer-'+XINFER_VER+'-linux-x64-'+a.sm+'.tar.gz';
+    }else{
+      fname=a.sm==='metal'?'xinfer-'+XINFER_VER+'-metal-cp38-abi3-macosx_11_0_arm64.whl':'xinfer-'+XINFER_VER+'-'+a.n+'-cp38-abi3-manylinux_2_34_x86_64.whl';
+    }
+    var el=document.createElement('a');
+    el.href=DL+fname;el.target='_blank';el.className='dcard';el.dataset.d=a.d;
+    el.innerHTML='<h4>'+a.name+' — '+a.gpu+'</h4>'
+      +(a.cuda?'<p>'+a.cuda+'</p>':'<p>Apple Silicon</p>')
+      +'<span class="dl-file">'+fname+'</span>'
+      +'<span class="dl" data-i="d.go">'+(I[lang]['d.go']||'Download →')+'</span>';
+    dcards.appendChild(el);
+    setTimeout(function(){el.classList.add('vis')},10+(a.d||0));
+  });
+}
+renderDCards('deb');
+
+document.querySelectorAll('.dtabs .tbtn').forEach(function(b){
+  b.onclick=function(){
+    document.querySelectorAll('.dtabs .tbtn').forEach(function(x){x.classList.remove('on')});
+    b.classList.add('on');
+    renderDCards(b.dataset.dt);
+  };
+});
+
+/* ═══ Pip grid ═══ */
+var sms=['sm70','sm75','sm80','sm89','sm90','sm120','metal'];
+var pg=document.getElementById('pgrid');
+sms.forEach(function(v){
+  var cmd='pip install xinfer --index-url https://guoqingbao.github.io/xinfer/'+v+'/';
+  var d=document.createElement('div');d.className='pitem';
+  d.innerHTML='<code>'+cmd+'</code><button class="cpb" data-i="cp">Copy</button>';
+  d.querySelector('.cpb').onclick=function(){
+    var b=this;navigator.clipboard.writeText(cmd).then(function(){
+      b.textContent=I[lang].cpd;b.classList.add('ok');
+      setTimeout(function(){b.textContent=I[lang].cp;b.classList.remove('ok')},1800);
+    });
+  };
+  pg.appendChild(d);
+});
+
+/* ═══ Scroll reveal ═══ */
+var io=new IntersectionObserver(function(ee){
+  ee.forEach(function(e){
+    if(!e.isIntersecting)return;
+    var el=e.target;
+    if(el.dataset.d!==undefined){setTimeout(function(){el.classList.add('vis')},+el.dataset.d||0)}
+    else{el.classList.add('vis')}
+    io.unobserve(el);
+  });
+},{threshold:.12,rootMargin:'0px 0px -30px 0px'});
+document.querySelectorAll('.rv,.fcard,.dcard').forEach(function(el){io.observe(el)});
+
+/* ═══ Count-up ═══ */
+var counted=new Set();
+function countUp(el){
+  if(counted.has(el))return;counted.add(el);
+  var tgt=parseFloat(el.dataset.n),dec=tgt%1?2:0,dur=1100,st=performance.now();
+  function tick(now){
+    var p=Math.min((now-st)/dur,1),ease=1-Math.pow(1-p,3);
+    el.textContent=(tgt*ease).toFixed(dec);
+    if(p<1)requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+}
+var pio=new IntersectionObserver(function(ee){
+  ee.forEach(function(e){
+    if(e.isIntersecting){document.querySelectorAll('#perf .sv').forEach(countUp);pio.disconnect()}
+  });
+},{threshold:.25});
+var ps=document.getElementById('perf');if(ps)pio.observe(ps);
+
+/* ═══ Particles ═══ */
+var cv=document.createElement('canvas');
+cv.style.cssText='position:fixed;inset:0;z-index:0;pointer-events:none;opacity:.35';
+document.body.appendChild(cv);
+var cx=cv.getContext('2d'),pts=[];
+function rsz(){cv.width=innerWidth;cv.height=innerHeight}
+function init(){pts=[];for(var j=0;j<40;j++)pts.push({x:Math.random()*cv.width,y:Math.random()*cv.height,r:Math.random()*1.2+.4,dx:(Math.random()-.5)*.25,dy:(Math.random()-.5)*.25,o:Math.random()*.4+.08})}
+function draw(){cx.clearRect(0,0,cv.width,cv.height);pts.forEach(function(p){
+  cx.beginPath();cx.arc(p.x,p.y,p.r,0,6.28);cx.fillStyle='rgba(96,165,250,'+p.o+')';cx.fill();
+  p.x+=p.dx;p.y+=p.dy;
+  if(p.x<0)p.x=cv.width;if(p.x>cv.width)p.x=0;if(p.y<0)p.y=cv.height;if(p.y>cv.height)p.y=0;
+});requestAnimationFrame(draw)}
+rsz();init();draw();
+window.addEventListener('resize',function(){rsz();init()});
+})();
+</script>
+</body>
+</html>
