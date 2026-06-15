@@ -46,7 +46,7 @@ xinfer --m Qwen/Qwen3.6-27B-FP8 --kvcache-dtype turbo4 --ui-server
 
 **Using local model path:**
 ```bash
-xinfer --w /home/Qwen3.6-35B-A3B --d 0,1 --ui-server
+xinfer --m /home/Qwen3.6-35B-A3B --d 0,1 --ui-server
 ```
 
 **Python usage:**
@@ -226,7 +226,7 @@ xinfer --m Qwen/Qwen3.6-35B-A3B --isq q4k --kvcache-dtype fp8
 xinfer --m Qwen/Qwen3.6-35B-A3B --isq q4k --kvcache-dtype turbo4
 
 # Metal ISQ
-xinfer --w /path/Qwen3-4B --isq q6k
+xinfer --m /path/Qwen3-4B --isq q6k
 ```
 
 </details>
@@ -239,7 +239,7 @@ xinfer --w /path/Qwen3-4B --isq q6k
 xinfer --m unsloth/Qwen3.5-27B-GGUF --f Qwen3.5-27B-Q4_K_M.gguf
 
 # Multi-GPU — GGUF
-xinfer --d 0,1 --f /path/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf
+xinfer --d 0,1 --m /path/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf
 ```
 
 </details>
@@ -354,7 +354,7 @@ Split prefill (prompt processing) and decode (token generation) across GPUs or m
 xinfer --d 0,1 --m Qwen/Qwen3-30B-A3B-Instruct-2507 --pd-server
 
 # PD Client (decode GPU + API)
-xinfer --d 2,3 --w /path/Qwen3-30B-A3B-Instruct-2507 --isq q4k --ui-server --port 8000 --pd-client
+xinfer --d 2,3 --m /path/Qwen3-30B-A3B-Instruct-2507 --isq q4k --ui-server --port 8000 --pd-client
 ```
 
 **Multinode** (tcp mode)
@@ -363,7 +363,7 @@ xinfer --d 2,3 --w /path/Qwen3-30B-A3B-Instruct-2507 --isq q4k --ui-server --por
 target/release/xinfer --d 0,1 --m Qwen/... --pd-server --pd-url tcp://0.0.0.0:8100
 
 # Client machine
-target/release/xinfer --d 0,1 --w /path/... --pd-client --pd-url tcp://192.168.1.100:8100 --ui-server --port 8000
+target/release/xinfer --d 0,1 --m /path/... --pd-client --pd-url tcp://192.168.1.100:8100 --ui-server --port 8000
 ```
 
 > Metal/macOS requires `--pd-url` (no LocalIPC support).
@@ -380,7 +380,7 @@ target/release/xinfer --d 0,1 --m Qwen/... --pd-server --pd-url file:///sockets
 
 # Client container
 docker run --gpus '"device=2,3"' -v /tmp/pd-sockets:/sockets ...
-target/release/xinfer --d 0,1 --w /path/... --pd-client --pd-url file:///sockets --ui-server --port 8000
+target/release/xinfer --d 0,1 --m /path/... --pd-client --pd-url file:///sockets --ui-server --port 8000
 ```
 
 </details>
@@ -432,9 +432,9 @@ Constraint-based generation via llguidance — Lark grammars, regex, JSON Schema
 
 | Flag | Description |
 |---|---|
-| `--m` | HuggingFace model ID (auto-download) |
-| `--w` | Local Safetensors model path |
-| `--f` | GGUF file path (or filename when `--m` is given) |
+| `--m` | Model source: HuggingFace model ID, local Safetensors directory, or local GGUF file |
+| `--w` | Legacy alias for local Safetensors directory; prefer `--m <local_dir>` |
+| `--f` | Local GGUF file when used alone; remote GGUF filename when paired with `--m <model_id>` |
 | `--d` | Device IDs (e.g. `--d 0,1`) |
 | `--ui-server` | API server + built-in ChatGPT-style web UI |
 | `--server` | API server only (no web UI) |

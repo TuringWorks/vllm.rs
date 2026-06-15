@@ -864,16 +864,16 @@ pub struct Args {
     #[arg(long)]
     pub max_model_len: Option<usize>,
 
-    /// if weight_path is passed, it will ignore the model_id
+    /// Model source: Hugging Face model id, local HF-style directory, or local GGUF file.
     #[arg(long = "m")]
     pub model_id: Option<String>,
 
-    /// The folder name that contains safetensor weights and json files
-    /// (same structure as huggingface online)
+    /// Legacy local directory containing safetensor weights and json files.
+    /// Prefer --m <local_dir> for new commands.
     #[arg(long = "w")]
     pub weight_path: Option<String>,
 
-    /// gguf file path or gguf file name when model_id is given
+    /// GGUF file path, or GGUF file name when --m is a Hugging Face repo id.
     #[arg(long = "f")]
     pub weight_file: Option<String>,
 
@@ -949,7 +949,7 @@ pub struct Args {
     #[arg(long, default_value_t = false)]
     pub server: bool, //server mode
 
-    #[arg(long)]
+    #[arg(long, visible_alias = "p")]
     pub port: Option<usize>,
 
     #[arg(long, default_value = None, help = "KV cache dtype: auto (default, uses model dtype), fp8, turbo8, turbo4, turbo3")]
@@ -1007,6 +1007,56 @@ pub struct Args {
     /// Metal uses half of this value after rounding.
     #[arg(long, default_value_t = crate::utils::config::DEFAULT_PREFILL_CHUNK_SIZE)]
     pub prefill_chunk_size: usize,
+}
+
+impl Args {
+    pub fn normalize_model_args(&mut self) -> Result<()> {
+        if self.model_id.is_some() && self.weight_path.is_some() {
+            candle_core::bail!("Use either --m <model> or legacy --w <local_dir>, not both.");
+        }
+
+        let Some(model) = self.model_id.clone() else {
+            return Ok(());
+        };
+
+        let model_path = Path::new(&model);
+        if self.weight_file.is_some() {
+            if model_path.exists() {
+                candle_core::bail!(
+                    "--m <repo_id> --f <file.gguf> is for remote GGUF repositories. \
+                     For local GGUF files, use --m <path/to/model.gguf> or --f <path/to/model.gguf>."
+                );
+            }
+            return Ok(());
+        }
+
+        if !model_path.exists() {
+            return Ok(());
+        }
+
+        if model_path.is_dir() {
+            self.weight_path = Some(model);
+            self.model_id = None;
+            return Ok(());
+        }
+
+        if model_path.is_file() && has_gguf_extension(model_path) {
+            self.weight_file = Some(model);
+            self.model_id = None;
+            return Ok(());
+        }
+
+        candle_core::bail!(
+            "--m local files must be GGUF files. Use --m <local_dir> for safetensors models."
+        )
+    }
+}
+
+fn has_gguf_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.eq_ignore_ascii_case("gguf"))
+        .unwrap_or(false)
 }
 
 /// Result of executing tool calls via MCP
@@ -1530,6 +1580,69 @@ pub async fn run_server(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
+
+    fn temp_test_path(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("xinfer-args-{}-{name}", std::process::id()))
+    }
+
+    #[test]
+    fn normalize_model_args_maps_local_dir_from_m_to_weight_path() {
+        let dir = temp_test_path("local-dir");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut args = Args::try_parse_from(["xinfer", "--m", dir.to_str().unwrap()]).unwrap();
+        args.normalize_model_args().unwrap();
+
+        assert_eq!(args.model_id, None);
+        assert_eq!(args.weight_path.as_deref(), dir.to_str());
+        assert_eq!(args.weight_file, None);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn normalize_model_args_maps_local_gguf_from_m_to_weight_file() {
+        let file = temp_test_path("model.gguf");
+        let _ = std::fs::remove_file(&file);
+        std::fs::write(&file, b"").unwrap();
+
+        let mut args = Args::try_parse_from(["xinfer", "--m", file.to_str().unwrap()]).unwrap();
+        args.normalize_model_args().unwrap();
+
+        assert_eq!(args.model_id, None);
+        assert_eq!(args.weight_path, None);
+        assert_eq!(args.weight_file.as_deref(), file.to_str());
+
+        let _ = std::fs::remove_file(&file);
+    }
+
+    #[test]
+    fn normalize_model_args_keeps_remote_gguf_repo_and_file() {
+        let mut args = Args::try_parse_from([
+            "xinfer",
+            "--m",
+            "unsloth/Qwen3-0.6B-GGUF",
+            "--f",
+            "Qwen3-0.6B-Q4_K_M.gguf",
+        ])
+        .unwrap();
+
+        args.normalize_model_args().unwrap();
+
+        assert_eq!(args.model_id.as_deref(), Some("unsloth/Qwen3-0.6B-GGUF"));
+        assert_eq!(args.weight_path, None);
+        assert_eq!(args.weight_file.as_deref(), Some("Qwen3-0.6B-Q4_K_M.gguf"));
+    }
+
+    #[test]
+    fn port_accepts_p_alias() {
+        let args =
+            Args::try_parse_from(["xinfer", "--m", "Qwen/Qwen3-0.6B", "--p", "9000"]).unwrap();
+
+        assert_eq!(args.port, Some(9000));
+    }
 
     #[test]
     fn build_messages_without_images() {

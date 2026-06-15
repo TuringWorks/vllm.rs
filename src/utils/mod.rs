@@ -1521,7 +1521,7 @@ pub fn init_config_tokenizer(
     } else if !model_pathes.get_weight_filenames().is_empty()
         && model_pathes.get_weight_filenames()[0].exists()
     {
-        assert!(econfig.isq.is_none(), "GGUF model does not support ISQ! \n\t***Tips: use `--w` to specify safetensors model path!***");
+        assert!(econfig.isq.is_none(), "GGUF model does not support ISQ! \n\t***Tips: use `--m <local_dir>` to specify a safetensors model path!***");
         let auxiliary_weight_files = model_pathes.get_auxiliary_filenames();
         let GGUFInfo {
             tokenizer,
@@ -1532,7 +1532,7 @@ pub fn init_config_tokenizer(
             chat_template,
         } = load_gguf_info_from_files(&model_pathes.get_weight_filenames()).map_err(|e| {
             candle_core::Error::msg(format!(
-                "Unable to read {:?} as a GGUF file: {e}\n\t***Tips: use `--w` to specify safetensor model directory!***",
+                "Unable to read {:?} as a GGUF file: {e}\n\t***Tips: use `--m <local_dir>` to specify a safetensors model directory!***",
                 model_pathes.get_weight_filenames()[0]
             ))
         })?;

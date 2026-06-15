@@ -67,7 +67,7 @@ docker run --rm -it --gpus all --network host -v /home:/home -v /data:/data xinf
 ```
 Start the UI + API server
 ```bash
-xinfer --w /home/path/Qwen3-Coder-30B-A3B-Instruct-FP8 --ui-server
+xinfer --m /home/path/Qwen3-Coder-30B-A3B-Instruct-FP8 --ui-server
 ```
 
 **Note:** if `Ctrl+C` not working in docker, you need `Ctrl+P` then `Ctrl+Q` to stop the server.

@@ -20,9 +20,9 @@ cargo build --release --features metal
 ```
 
 ## Model formats
-- **Safetensors (HF layout)**: `--m <hf_id>` for cached download, or `--w <local_dir>` for offline weights + configs.
+- **Safetensors (HF layout)**: `--m <hf_id>` for cached download, or `--m <local_dir>` for offline weights + configs. `--w <local_dir>` still works as a legacy alias.
 - **Safetensors (HF layout) + ISQ**: in-situ quantize into GGUF with args `--isq <q4k|q2k|q6k|...>`.
-- **GGUF**: `--f <gguf_file>`; no configs needed.
+- **GGUF**: `--m <local.gguf>` or `--f <local.gguf>` for a local file. Use `--m <hf_id> --f <remote_file.gguf>` for a GGUF file hosted in a Hugging Face repo.
 - **Vision-Language** (Qwen3-VL, Gemma3, Mistral3-VL): require image tokens; use `--ui-server` for uploads or send image_url/base64 in the request.
 
 
@@ -38,7 +38,12 @@ cargo build --release --features metal
   ```
 - **GGUF quantized**  
   ```bash
-  target/release/xinfer --f /path/model-Q4_K_M.gguf --max-model-len 65536  ```
+  target/release/xinfer --m /path/model-Q4_K_M.gguf --max-model-len 65536
+  ```
+- **Remote GGUF quantized**  
+  ```bash
+  target/release/xinfer --m unsloth/Qwen3-0.6B-GGUF --f Qwen3-0.6B-Q4_K_M.gguf --ui-server
+  ```
 - **Embeddings** (same server; OpenAI `/v1/embeddings`)  
   ```bash
   target/release/xinfer --m Qwen/Qwen2.5-7B-Instruct  # curl -d '{"input":"hello","embedding_type":"mean"}' http://localhost:8000/v1/embeddings
@@ -46,7 +51,8 @@ cargo build --release --features metal
 - **Multimodal**  
   ```bash
   # Update image in the Chat UI
-  target/release/xinfer --m Qwen/Qwen3-VL-8B-Instruct --ui-server  ```
+  target/release/xinfer --m Qwen/Qwen3-VL-8B-Instruct --ui-server
+  ```
 
 Common runtime knobs: `--max-model-len`, `--max-num-seqs`, `--kv-fraction` (CUDA KV share), `--cpu-mem-fold` (CPU swap ratio), `--port`, `--kvcache-dtype` (fp8/turbo8/turbo4/turbo3), `--prefix-cache`, `--prefix-cache-max-tokens`, `--ui-server`, `--batch` (perf test).
 
@@ -63,11 +69,13 @@ Reasoning defaults to enabled when a request omits `thinking` / `enable_thinking
 - **PD server (prefill host, usually memory-rich)**  
   ```bash
   target/release/xinfer --pd-server --port 8000 \
-    --m Qwen/Qwen3-30B-A3B-Instruct-2507  ```
+    --m Qwen/Qwen3-30B-A3B-Instruct-2507
+  ```
 - **PD client (decode host)**  
   ```bash
   target/release/xinfer --server --pd-client --pd-url 0.0.0.0:8000 \
-    --m Qwen/Qwen3-30B-A3B-Instruct-2507  ```
+    --m Qwen/Qwen3-30B-A3B-Instruct-2507
+  ```
 - Same weights/config on both ends; Local IPC used automatically on same node CUDA, TCP when `--pd-url` is set. Monitor logs for transfer and swap events.
 
 ## Prefix cache

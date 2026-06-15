@@ -32,10 +32,11 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
         .init();
-    let args = Args::parse();
+    let mut args = Args::parse();
+    args.normalize_model_args()?;
 
     if args.model_id.is_none() && args.weight_path.is_none() && args.weight_file.is_none() {
-        candle_core::bail!("Must provide model_id or weight_path or weight_file!");
+        candle_core::bail!("Must provide --m <model> or --f <gguf_file>.");
     }
 
     if let Some(ref enforced) = args.enforce_parser {

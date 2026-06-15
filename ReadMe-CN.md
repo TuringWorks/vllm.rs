@@ -47,7 +47,7 @@ xinfer --m Qwen/Qwen3.6-27B-FP8 --kvcache-dtype turbo4 --ui-server
 
 **使用本地模型路径：**
 ```bash
-xinfer --w /home/Qwen3.6-35B-A3B --d 0,1 --ui-server
+xinfer --m /home/Qwen3.6-35B-A3B --d 0,1 --ui-server
 ```
 
 **Python 使用方式：**
@@ -226,7 +226,7 @@ xinfer --m Qwen/Qwen3.6-35B-A3B --isq q4k --kvcache-dtype fp8
 xinfer --m Qwen/Qwen3.6-35B-A3B --isq q4k --kvcache-dtype turbo4
 
 # Metal ISQ
-xinfer --w /path/Qwen3-4B --isq q6k
+xinfer --m /path/Qwen3-4B --isq q6k
 ```
 
 </details>
@@ -239,7 +239,7 @@ xinfer --w /path/Qwen3-4B --isq q6k
 xinfer --m unsloth/Qwen3.5-27B-GGUF --f Qwen3.5-27B-Q4_K_M.gguf
 
 # 多卡 — GGUF
-xinfer --d 0,1 --f /path/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf
+xinfer --d 0,1 --m /path/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf
 ```
 
 </details>
@@ -349,7 +349,7 @@ pip install target/wheels/xinfer_ai-*.whl --force-reinstall
 xinfer --d 0,1 --m Qwen/Qwen3-30B-A3B-Instruct-2507 --pd-server
 
 # PD 客户端（解码 GPU + API 服务）
-xinfer --d 2,3 --w /path/Qwen3-30B-A3B-Instruct-2507 --isq q4k --ui-server --port 8000 --pd-client
+xinfer --d 2,3 --m /path/Qwen3-30B-A3B-Instruct-2507 --isq q4k --ui-server --port 8000 --pd-client
 ```
 
 **多机部署**（tcp 模式）
@@ -358,7 +358,7 @@ xinfer --d 2,3 --w /path/Qwen3-30B-A3B-Instruct-2507 --isq q4k --ui-server --por
 target/release/xinfer --d 0,1 --m Qwen/... --pd-server --pd-url tcp://0.0.0.0:8100
 
 # 客户端机器
-target/release/xinfer --d 0,1 --w /path/... --pd-client --pd-url tcp://192.168.1.100:8100 --ui-server --port 8000
+target/release/xinfer --d 0,1 --m /path/... --pd-client --pd-url tcp://192.168.1.100:8100 --ui-server --port 8000
 ```
 
 > Metal/macOS 不支持 Local IPC，必须指定 `--pd-url`。
@@ -375,7 +375,7 @@ target/release/xinfer --d 0,1 --m Qwen/... --pd-server --pd-url file:///sockets
 
 # 客户端容器
 docker run --gpus '"device=2,3"' -v /tmp/pd-sockets:/sockets ...
-target/release/xinfer --d 0,1 --w /path/... --pd-client --pd-url file:///sockets --ui-server --port 8000
+target/release/xinfer --d 0,1 --m /path/... --pd-client --pd-url file:///sockets --ui-server --port 8000
 ```
 
 </details>
@@ -427,9 +427,9 @@ xinfer --m unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF \
 
 | 参数 | 说明 |
 |---|---|
-| `--m` | HuggingFace 模型 ID（自动下载） |
-| `--w` | 本地 Safetensors 模型路径 |
-| `--f` | GGUF 文件路径（或配合 `--m` 使用时为文件名） |
+| `--m` | 模型来源：HuggingFace 模型 ID、本地 Safetensors 目录或本地 GGUF 文件 |
+| `--w` | 本地 Safetensors 目录的旧别名；新命令优先使用 `--m <local_dir>` |
+| `--f` | 单独使用时为本地 GGUF 文件；配合 `--m <model_id>` 时为远程 GGUF 文件名 |
 | `--d` | 设备 ID（如 `--d 0,1`） |
 | `--ui-server` | API 服务 + ChatGPT 风格内置 Web UI |
 | `--server` | 仅 API 服务（无 Web UI） |

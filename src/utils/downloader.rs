@@ -47,6 +47,13 @@ impl ModelPaths {
 }
 
 impl Downloader {
+    fn has_gguf_extension(path: &Path) -> bool {
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.eq_ignore_ascii_case("gguf"))
+            .unwrap_or(false)
+    }
+
     fn is_mmproj_filename(name: &str) -> bool {
         let lower = name.to_ascii_lowercase();
         lower.ends_with(".gguf") && lower.starts_with("mmproj")
@@ -130,6 +137,75 @@ impl Downloader {
             weight_file,
         }
     }
+
+    fn local_safetensors_model(path: &str) -> Result<ModelPaths> {
+        if !Path::new(path).is_dir() {
+            candle_core::bail!(
+                "Safetensors model path must be a directory. Use --m <path/to/model.gguf> or --f <path/to/model.gguf> for GGUF files."
+            );
+        }
+
+        let path_string = path.to_string();
+
+        Ok(ModelPaths {
+            tokenizer_filename: Path::new(path).join("tokenizer.json"),
+            tokenizer_config_filename: Path::new(path).join("tokenizer_config.json"),
+            config_filename: Path::new(path).join("config.json"),
+            filenames: if Path::new(path)
+                .join("model.safetensors.index.json")
+                .exists()
+            {
+                super::hub_load_local_safetensors(&path_string, "model.safetensors.index.json")?
+            } else {
+                vec![Path::new(path).join("model.safetensors")]
+            },
+            generation_config_filename: if Path::new(path).join("generation_config.json").exists() {
+                Path::new(path).join("generation_config.json")
+            } else {
+                "".into()
+            },
+            auxiliary_filenames: Vec::new(),
+            chat_template_filename: if Path::new(path).join("chat_template.jinja").exists() {
+                Some(Path::new(path).join("chat_template.jinja"))
+            } else if Path::new(path).join("chat_template.json").exists() {
+                Some(Path::new(path).join("chat_template.json"))
+            } else {
+                None
+            },
+        })
+    }
+
+    fn local_gguf_model(main_file: &Path) -> Result<ModelPaths> {
+        if !main_file.exists() {
+            candle_core::bail!("Model file not found: {}", main_file.display());
+        }
+        if !main_file.is_file() || !Self::has_gguf_extension(main_file) {
+            candle_core::bail!(
+                "GGUF model source must be a .gguf file, got {}",
+                main_file.display()
+            );
+        }
+
+        let auxiliary_filenames = Self::find_local_mmproj_file(main_file)
+            .map(|path| {
+                crate::log_info!(
+                    "Found auxiliary GGUF file for multimodal model: {}",
+                    path.display()
+                );
+                vec![path]
+            })
+            .unwrap_or_default();
+
+        Ok(ModelPaths {
+            tokenizer_filename: PathBuf::new(),
+            tokenizer_config_filename: PathBuf::new(),
+            config_filename: PathBuf::new(),
+            filenames: vec![main_file.to_path_buf()],
+            auxiliary_filenames,
+            generation_config_filename: "".into(),
+            chat_template_filename: None,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -195,85 +271,24 @@ impl Downloader {
             &self.weight_file,
         ) {
             //model in a folder (safetensor format, huggingface folder structure)
-            (None, Some(path), None) => {
-                if !Path::new(path).is_dir() {
-                    candle_core::bail!("Safetensor weight path must be a directory! \n\t***Tips: use `--f` to specify gguf model file!***");
+            (None, Some(path), None) => (Self::local_safetensors_model(path)?, false),
+            //model in a quantized file (gguf/ggml format)
+            (None, path, Some(file)) => {
+                let path = path.clone().unwrap_or_default();
+                let main_file = Path::new(&path).join(file);
+                (Self::local_gguf_model(&main_file)?, true)
+            }
+            (Some(_), None, Some(_)) => (self.download_gguf_model(None)?, true),
+            (Some(model), None, None) if Path::new(model).exists() => {
+                let path = Path::new(model);
+                if path.is_dir() {
+                    (Self::local_safetensors_model(model)?, false)
+                } else if path.is_file() {
+                    (Self::local_gguf_model(path)?, true)
                 } else {
-                    (
-                        ModelPaths {
-                            tokenizer_filename: Path::new(path).join("tokenizer.json"),
-                            tokenizer_config_filename: Path::new(path)
-                                .join("tokenizer_config.json"),
-                            config_filename: Path::new(path).join("config.json"),
-                            filenames: if Path::new(path)
-                                .join("model.safetensors.index.json")
-                                .exists()
-                            {
-                                super::hub_load_local_safetensors(
-                                    path,
-                                    "model.safetensors.index.json",
-                                )?
-                            } else {
-                                //a single weight file case
-                                let mut safetensors_files = Vec::<std::path::PathBuf>::new();
-                                safetensors_files
-                                    .insert(0, Path::new(path).join("model.safetensors"));
-                                safetensors_files
-                            },
-                            generation_config_filename: if Path::new(path)
-                                .join("generation_config.json")
-                                .exists()
-                            {
-                                Path::new(path).join("generation_config.json")
-                            } else {
-                                "".into()
-                            },
-                            auxiliary_filenames: Vec::new(),
-                            chat_template_filename: if Path::new(path)
-                                .join("chat_template.jinja")
-                                .exists()
-                            {
-                                Some(Path::new(path).join("chat_template.jinja"))
-                            } else if Path::new(path).join("chat_template.json").exists() {
-                                Some(Path::new(path).join("chat_template.json"))
-                            } else {
-                                None
-                            },
-                        },
-                        false,
-                    )
+                    candle_core::bail!("Unsupported model path: {}", path.display());
                 }
             }
-            //model in a quantized file (gguf/ggml format)
-            (None, path, Some(file)) => (
-                {
-                    let path = path.clone().unwrap_or_default();
-                    let main_file = Path::new(&path).join(file);
-                    if !main_file.exists() {
-                        panic!("Model file not found {file}");
-                    }
-                    let auxiliary_filenames = Self::find_local_mmproj_file(&main_file)
-                        .map(|path| {
-                            crate::log_info!(
-                                "Found auxiliary GGUF file for multimodal model: {}",
-                                path.display()
-                            );
-                            vec![path]
-                        })
-                        .unwrap_or_default();
-                    ModelPaths {
-                        tokenizer_filename: PathBuf::new(),
-                        tokenizer_config_filename: PathBuf::new(),
-                        config_filename: PathBuf::new(),
-                        filenames: vec![main_file],
-                        auxiliary_filenames,
-                        generation_config_filename: "".into(),
-                        chat_template_filename: None,
-                    }
-                },
-                true,
-            ),
-            (Some(_), None, Some(_)) => (self.download_gguf_model(None)?, true),
             (Some(_), None, None) => {
                 //try download model anonymously
                 let loaded = self.download_model(None, hf_token.clone(), hf_token_path.clone());
@@ -311,10 +326,10 @@ impl Downloader {
                 }
             }
             _ => {
-                candle_core::bail!("No model id or weight_path/weight_file provided!\n***Tips***: \n \t For local model weights, \
-                    `--w <path/to/folder>` for safetensors models or gguf models.\n \
-                    \t For remote safetensor models, `--m <model_id>` to download from HuggingFace hub. \
-                    \n \t For remote gguf models, `--m <model_id> --f <weight_file>` to download from HuggingFace hub.");
+                candle_core::bail!("No model source provided!\n***Tips***: \n \t Use `--m <model_id>` for remote safetensors models.\n \
+                    \t Use `--m <local_dir>` for local safetensors models.\n \
+                    \t Use `--m <local.gguf>` or `--f <local.gguf>` for local GGUF models.\n \
+                    \t Use `--m <model_id> --f <weight_file.gguf>` for remote GGUF models.");
             }
         };
 
