@@ -2,7 +2,7 @@ use crate::models::layers::linear::{
     linear_b_x as linear_b, linear_no_bias_x as linear, LinearX as Linear, LnFp8, LnMxfp4, LnNvfp4,
     QLinear,
 };
-use crate::models::layers::VarBuilderX;
+use crate::models::layers::{isq_high_precision_quant, VarBuilderX};
 use crate::utils::config::QuantConfig;
 use crate::utils::gguf_helper::restore_qwen35_qkv_weight;
 #[cfg(feature = "nccl")]
@@ -105,11 +105,15 @@ pub fn load_restored_gguf_column_linear(
     let ws = qvb.get((out_dim, in_dim), "weight")?;
     let mut wdtype = ws.dtype();
     let weight = restore_weight(ws.dequantize_f16(qvb.device())?)?;
+    qvb.clear_cache();
+    drop(ws);
     let local_weight = tensor_parallel_chunk(&weight, 0, comm.rank(), comm.world_size(), name)?;
-    if local_weight.dim(0)? % wdtype.block_size() != 0 {
+    drop(weight);
+    let last_dim = local_weight.dim(candle_core::D::Minus1)?;
+    if last_dim % wdtype.block_size() != 0 {
         wdtype = GgmlDType::Q8_0;
     }
-    let qtensor = QTensor::quantize(&local_weight, wdtype)?;
+    let qtensor = QTensor::quantize_owned(local_weight, wdtype)?;
     let qlinear = QLinear::from_qparts_x(qtensor, None, dtype)?;
     Ok(TensorParallelColumnLinear::new(Linear::QLinear(qlinear)))
 }
@@ -264,6 +268,8 @@ pub fn load_restored_gguf_merged_qkv_linear(
         num_v_heads_global,
         head_v_dim,
     )?;
+    qvb.clear_cache();
+    drop(ws);
 
     let chunk_sizes = [key_dim_global, key_dim_global, value_dim_global];
     let mut local_chunks = Vec::with_capacity(chunk_sizes.len());
@@ -278,7 +284,8 @@ pub fn load_restored_gguf_merged_qkv_linear(
             comm.world_size(),
             &format!("{name}[{chunk_idx}]"),
         )?;
-        if local_chunk.dim(0)? % wdtype.block_size() != 0 {
+        let chunk_last_dim = local_chunk.dim(candle_core::D::Minus1)?;
+        if chunk_last_dim % wdtype.block_size() != 0 {
             wdtype = GgmlDType::Q8_0;
         }
         local_chunks.push(local_chunk);
@@ -288,7 +295,9 @@ pub fn load_restored_gguf_merged_qkv_linear(
 
     let local_chunk_refs = local_chunks.iter().collect::<Vec<_>>();
     let local_weight = Tensor::cat(&local_chunk_refs, 0)?;
-    let qtensor = QTensor::quantize(&local_weight, wdtype)?;
+    drop(local_chunks);
+    drop(weight);
+    let qtensor = QTensor::quantize_owned(local_weight, wdtype)?;
     let qlinear = QLinear::from_qparts_x(qtensor, None, dtype)?;
     MergedParallelColumnLinear::from_packed_local_qlinear(
         Linear::QLinear(qlinear),
@@ -382,9 +391,27 @@ impl CustomOp1 for AllReduce {
                         full_len
                     );
                 }
-                // Slice to only the valid elements (handles narrow/view tensors)
                 let src_slice = full_slice.slice(start_offset..end_offset);
                 let mut dst = unsafe { dev.alloc::<f16>(elem_count) }.w()?;
+                self.comm
+                    .all_reduce(&src_slice, &mut dst, &ReduceOp::Sum)
+                    .map_err(candle_core::Error::debug)?;
+                candle_core::CudaStorage::wrap_cuda_slice(dst, dev)
+            }
+            DType::F32 => {
+                let full_slice = s.as_cuda_slice::<f32>()?;
+                let full_len = full_slice.len();
+                let end_offset = start_offset.saturating_add(elem_count);
+                if end_offset > full_len {
+                    candle_core::bail!(
+                        "all_reduce F32 slice out of bounds: start={}, elem_count={}, len={}",
+                        start_offset,
+                        elem_count,
+                        full_len
+                    );
+                }
+                let src_slice = full_slice.slice(start_offset..end_offset);
+                let mut dst = unsafe { dev.alloc::<f32>(elem_count) }.w()?;
                 self.comm
                     .all_reduce(&src_slice, &mut dst, &ReduceOp::Sum)
                     .map_err(candle_core::Error::debug)?;
@@ -471,11 +498,14 @@ pub fn load_restored_gguf_row_linear(
     let ws = qvb.get((out_dim, in_dim), "weight")?;
     let mut wdtype = ws.dtype();
     let weight = restore_weight(ws.dequantize_f16(qvb.device())?)?;
+    qvb.clear_cache();
+    drop(ws);
     let local_weight = tensor_parallel_chunk(&weight, 1, comm.rank(), comm.world_size(), name)?;
+    drop(weight);
     if local_weight.dim(1)? % wdtype.block_size() != 0 {
         wdtype = GgmlDType::Q8_0;
     }
-    let qtensor = QTensor::quantize(&local_weight, wdtype)?;
+    let qtensor = QTensor::quantize_owned(local_weight, wdtype)?;
     let qlinear = QLinear::from_qparts_x(qtensor, None, dtype)?;
     Ok(TensorParallelRowLinear::new(
         Linear::QLinear(qlinear),
@@ -670,7 +700,7 @@ impl MergedParallelColumnLinear {
         let mut output_splits: Option<Vec<usize>> = None;
         use crate::models::layers::linear::{LinearX, LnFp8, QLinear};
         match vb.0 {
-            Either::Left(v) => {
+            Either::Left(ref v) => {
                 if is_fp8_quant {
                     if chunk_dim != 0 {
                         candle_core::bail!(
@@ -1080,7 +1110,27 @@ impl MergedParallelColumnLinear {
                     vec_linear.push(ln);
                     output_splits = Some(local_output_splits);
                 } else {
-                    let weight = v.get((out_dim, in_dim), "weight")?;
+                    let target_device = v.device().clone();
+                    let use_native = if let Some(quantized_type) = quant {
+                        let sample_last_dim = if chunk_dim == 0 {
+                            in_dim
+                        } else {
+                            chunks[0] / comm.world_size()
+                        };
+                        QLinear::native_quantize_supported(
+                            sample_last_dim,
+                            quantized_type,
+                            &target_device,
+                        )?
+                    } else {
+                        true
+                    };
+                    let load_vb = if use_native {
+                        v.clone()
+                    } else {
+                        vb.cpu_var_builder().unwrap_or_else(|| v.clone())
+                    };
+                    let weight = load_vb.get((out_dim, in_dim), "weight")?;
                     let weight = if weight.dtype() != dtype {
                         weight.to_dtype(dtype)?
                     } else {
@@ -1121,11 +1171,20 @@ impl MergedParallelColumnLinear {
                         let ln = crate::models::layers::linear::Linear::new(ws_chunk, None);
                         let linear = if let Some(quantized_type) = quant {
                             let quantized_type = if chunk_idx == chunks.len() - 1 {
-                                "q8_0".to_string()
+                                isq_high_precision_quant(quantized_type).to_string()
                             } else {
                                 quantized_type.clone()
                             };
-                            LinearX::QLinear(QLinear::from_linear_x(ln, quantized_type, dtype)?)
+                            if use_native {
+                                LinearX::QLinear(QLinear::from_linear_x(ln, quantized_type, dtype)?)
+                            } else {
+                                LinearX::QLinear(QLinear::from_linear_x_on_device(
+                                    ln,
+                                    quantized_type,
+                                    dtype,
+                                    &target_device,
+                                )?)
+                            }
                         } else {
                             LinearX::Linear(ln)
                         };
