@@ -42,6 +42,9 @@ fn master_distribute_nccl_id(
         )
     })?;
 
+    #[cfg(target_arch = "aarch64")]
+    let raw_id: &[u8; 128] = id.internal();
+    #[cfg(not(target_arch = "aarch64"))]
     let raw_id: &[i8; 128] = id.internal();
     let raw_bytes: &[u8] = unsafe { std::slice::from_raw_parts(raw_id.as_ptr() as *const u8, 128) };
 
