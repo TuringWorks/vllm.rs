@@ -11,6 +11,7 @@ use xinfer::core::{engine::LLMEngine, GenerationOutput};
 use xinfer::log_error;
 use xinfer::server::run_server;
 use xinfer::server::Args;
+use xinfer::server::{ensure_server_bindings_or_exit, resolve_server_addr};
 use xinfer::transfer::{PdConfig, PdMethod, PdRole};
 use xinfer::utils::chat_template::Message;
 use xinfer::utils::config::GenerationConfig;
@@ -63,7 +64,7 @@ async fn main() -> Result<()> {
     };
 
     assert!(
-        !(interactive && (args.server || args.ui_server || args.pd_server)),
+        !(interactive && (!args.server.is_empty() || args.ui_server || args.pd_server)),
         "You selected both interactive and server mode, which is not valid!"
     );
 
@@ -79,7 +80,7 @@ async fn main() -> Result<()> {
         args.max_model_len
     };
 
-    let server = args.server
+    let server = !args.server.is_empty()
         || args.ui_server
         || args.pd_server
         || (!interactive && args.prompts.is_none() && args.batch.is_none());
@@ -138,6 +139,15 @@ async fn main() -> Result<()> {
     if args.pd_server && args.ui_server {
         candle_core::bail!("PD Server cannot run with UI Server enabled!");
     }
+
+    let server_addr = if server {
+        let default_port = if args.pd_server { 7000 } else { 8000 };
+        let addr = resolve_server_addr(&args.server, args.port, default_port)?;
+        ensure_server_bindings_or_exit(&addr, args.ui_server)?;
+        Some(addr)
+    } else {
+        None
+    };
 
     #[cfg(not(feature = "cuda"))]
     if (args.pd_server || args.pd_client) && args.pd_url.is_none() {
@@ -221,19 +231,9 @@ async fn main() -> Result<()> {
         Some(args.prefill_chunk_size),
     );
 
-    let server_port = if server {
-        let port = args
-            .port
-            .unwrap_or(if args.pd_server { 7000 } else { 8000 });
-        xinfer::utils::ensure_port_free("0.0.0.0", port as u16);
-        Some(port)
-    } else {
-        None
-    };
-
     let engine = LLMEngine::new(&econfig, dtype)?;
-    if let Some(port) = server_port {
-        run_server(engine.clone(), econfig.clone(), port, args.ui_server).await?;
+    if let Some(addr) = server_addr {
+        run_server(engine.clone(), econfig.clone(), addr, args.ui_server).await?;
         return Ok(());
     }
 
