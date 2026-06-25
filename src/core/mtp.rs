@@ -329,6 +329,7 @@ impl ModelRunner {
     /// Tries CUDA graph replay first (the graph's internal buffer for the
     /// post-norm hidden state is accessible via take_last_hidden_for_mtp),
     /// falling back to eager forward_with_hidden.
+    #[allow(unused)]
     fn mtp_decode_step1(&self, seqs: Seqs, _seq_info: &MtpSeqInfo) -> Result<(u32, Tensor)> {
         let (input_ids, positions, mut input_metadata) = match &seqs {
             Seqs::SeqRefs(seqs_ref) => self.prepare_decode(*seqs_ref)?,

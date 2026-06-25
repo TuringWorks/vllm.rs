@@ -622,36 +622,21 @@ fn can_quantize_to(dtype: GgmlDType) -> bool {
 }
 
 /// Dtypes supported natively by the `moe_gemm_gguf` kernel (no requant needed).
-/// Metal only supports K-quants + Q8_0; CUDA also supports IQ formats.
+/// Both CUDA and Metal support K-quants, Q8_0, and IQ formats.
 fn moe_gemm_gguf_supports(dtype: GgmlDType) -> bool {
-    #[cfg(feature = "metal")]
-    {
-        matches!(
-            dtype,
-            GgmlDType::Q2K
-                | GgmlDType::Q3K
-                | GgmlDType::Q4K
-                | GgmlDType::Q5K
-                | GgmlDType::Q6K
-                | GgmlDType::Q8_0
-        )
-    }
-    #[cfg(not(feature = "metal"))]
-    {
-        matches!(
-            dtype,
-            GgmlDType::Q2K
-                | GgmlDType::Q3K
-                | GgmlDType::Q4K
-                | GgmlDType::Q5K
-                | GgmlDType::Q6K
-                | GgmlDType::Q8_0
-                | GgmlDType::IQ2_XXS
-                | GgmlDType::IQ2_XS
-                | GgmlDType::IQ3_XXS
-                | GgmlDType::IQ4_XS
-        )
-    }
+    matches!(
+        dtype,
+        GgmlDType::Q2K
+            | GgmlDType::Q3K
+            | GgmlDType::Q4K
+            | GgmlDType::Q5K
+            | GgmlDType::Q6K
+            | GgmlDType::Q8_0
+            | GgmlDType::IQ2_XXS
+            | GgmlDType::IQ2_XS
+            | GgmlDType::IQ3_XXS
+            | GgmlDType::IQ4_XS
+    )
 }
 
 fn closest_quantizable_dtype(orig: GgmlDType) -> GgmlDType {
