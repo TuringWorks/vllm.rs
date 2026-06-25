@@ -404,6 +404,7 @@ impl EngineConfig {
             node_rank,
             master_addr,
             master_port,
+            mtp_num_speculative_tokens: None,
         }
     }
 }
