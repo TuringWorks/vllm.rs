@@ -20,6 +20,13 @@
 | **🐍** | 轻量 Python 绑定 | 需要 Python 入口时可选 PyO3 wheel 包 |
 
 ---
+## 📽️ 演示
+
+<p align="center">
+  <video src="https://guoqingbao.github.io/xinfer/assets/demo.mp4" width="600" controls></video>
+</p>
+
+---
 
 ## 🚀 快速开始
 
@@ -496,12 +503,6 @@ xinfer --m unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF \
 ```bash
 XINFER_NVFP4_FORCE_LUT=1 xinfer --m nvidia/Qwen3-30B-A3B-FP4 --ui-server
 ```
-
----
-
-## 📽️ 演示
-
-<video src="https://github.com/user-attachments/assets/7fc6aa0b-78ac-4323-923f-d761dd12857f" width="1000px"></video>
 
 ---
 

@@ -21,6 +21,14 @@
 
 ---
 
+## 📽️ Demo
+
+<p align="center">
+  <video src="https://guoqingbao.github.io/xinfer/assets/demo.mp4" width="600" controls></video>
+</p>
+
+---
+
 ## 🚀 Quick Start
 
 ### 📦 Install
@@ -497,12 +505,6 @@ Constraint-based generation via llguidance — Lark grammars, regex, JSON Schema
 ```bash
 XINFER_NVFP4_FORCE_LUT=1 xinfer --m nvidia/Qwen3-30B-A3B-FP4 --ui-server
 ```
-
----
-
-## 📽️ Demo
-
-<video src="https://github.com/user-attachments/assets/7fc6aa0b-78ac-4323-923f-d761dd12857f" width="1000px"></video>
 
 ---
 
