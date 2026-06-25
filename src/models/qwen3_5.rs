@@ -194,6 +194,10 @@ pub struct Qwen3_5ForCausalLM {
     dtype: DType,
     vocab_size: usize,
     is_qvar_builder: bool,
+    /// Pre-allocated hidden state buffer for MTP speculative decoding.
+    /// Allocated outside the CUDA graph pool so copy_ into it is graph-safe.
+    /// Shape: (max_graph_bs, hidden_size), allocated on first decode forward.
+    pub mtp_hidden_buffer: std::sync::Mutex<Option<Tensor>>,
 }
 
 impl Qwen3_5ForCausalLM {
@@ -480,6 +484,7 @@ impl Qwen3_5ForCausalLM {
             dtype,
             vocab_size,
             is_qvar_builder,
+            mtp_hidden_buffer: std::sync::Mutex::new(None),
         })
     }
 
@@ -490,6 +495,18 @@ impl Qwen3_5ForCausalLM {
         } else {
             Ok(xs)
         }
+    }
+
+    pub fn embed_weight(&self) -> &Tensor {
+        self.embed_tokens.embeddings()
+    }
+
+    /// Get the last hidden state for MTP from the pre-allocated buffer.
+    /// Returns row 0 of the buffer (MTP decode always uses batch_size=1).
+    pub fn take_last_hidden_for_mtp(&self) -> Option<Tensor> {
+        let guard = self.mtp_hidden_buffer.lock().ok()?;
+        let buf = guard.as_ref()?;
+        buf.get(0).ok()
     }
 
     fn forward_inner(
@@ -565,12 +582,24 @@ impl Qwen3_5ForCausalLM {
         let xs = self.norm.forward(&xs)?;
         if return_hidden {
             xs.to_dtype(DType::F32)
-        } else if self.is_qvar_builder {
-            self.lm_head.forward(&xs)
         } else {
-            self.lm_head
-                .forward(&xs.to_dtype(self.dtype)?)?
-                .to_dtype(DType::F32)
+            // Copy hidden state into the pre-allocated MTP buffer (graph-safe).
+            // copy_ is a CUDA memcpy kernel that gets captured into the graph,
+            // so the buffer is updated in-place on every graph replay.
+            if let Ok(guard) = self.mtp_hidden_buffer.lock() {
+                if let Some(buf) = guard.as_ref() {
+                    if xs.elem_count() <= buf.elem_count() {
+                        let _ = buf.copy_(&xs, 0);
+                    }
+                }
+            }
+            if self.is_qvar_builder {
+                self.lm_head.forward(&xs)
+            } else {
+                self.lm_head
+                    .forward(&xs.to_dtype(self.dtype)?)?
+                    .to_dtype(DType::F32)
+            }
         }
     }
 
@@ -614,6 +643,36 @@ impl Qwen3_5ForCausalLM {
         )
     }
 
+    /// Forward pass that returns both logits and hidden states.
+    /// Used by MTP speculative decoding to get backbone hidden states for the draft head.
+    pub fn forward_with_hidden(
+        &self,
+        input_ids: &Tensor,
+        positions: &Tensor,
+        kv_caches: Option<&Vec<(Tensor, Tensor)>>,
+        input_metadata: &InputMetadata,
+        embeded_inputs: bool,
+    ) -> Result<(Tensor, Tensor)> {
+        let hidden = self.forward_inner(
+            input_ids,
+            positions,
+            kv_caches,
+            input_metadata,
+            embeded_inputs,
+            &None,
+            &None,
+            true,
+        )?;
+        let logits = if self.is_qvar_builder {
+            self.lm_head.forward(&hidden)?
+        } else {
+            self.lm_head
+                .forward(&hidden.to_dtype(self.dtype)?)?
+                .to_dtype(DType::F32)?
+        };
+        Ok((logits, hidden))
+    }
+
     pub fn forward_with_deepstack(
         &self,
         input_ids: &Tensor,
@@ -634,6 +693,17 @@ impl Qwen3_5ForCausalLM {
             deepstack_visual_embeds,
             false,
         )
+    }
+
+    /// Apply lm_head to hidden states to get logits. Used by MTP drafting.
+    pub fn forward_lm_head(&self, hidden: &Tensor) -> Result<Tensor> {
+        if self.is_qvar_builder {
+            self.lm_head.forward(hidden)
+        } else {
+            self.lm_head
+                .forward(&hidden.to_dtype(self.dtype)?)?
+                .to_dtype(DType::F32)
+        }
     }
 
     pub fn get_vocab_size(&self) -> usize {
@@ -664,6 +734,20 @@ impl Qwen3_5ForCausalLM {
         self.mamba_cache.write().reserve_capacity(max_num_seqs)
     }
 
+    /// Pre-allocate the MTP hidden state buffer outside of CUDA graph capture.
+    /// Must be called before warmup_capture so the buffer lives in regular GPU memory.
+    pub fn preallocate_mtp_hidden_buffer(&self, max_batch_size: usize) -> Result<()> {
+        let buf = Tensor::zeros(
+            (max_batch_size, self.config.hidden_size),
+            self.dtype,
+            &self.device,
+        )?;
+        if let Ok(mut guard) = self.mtp_hidden_buffer.lock() {
+            *guard = Some(buf);
+        }
+        Ok(())
+    }
+
     pub fn set_mamba_prefix_cache_capacity(&self, capacity: usize) {
         self.mamba_cache.write().set_prefix_cache_capacity(capacity);
     }
@@ -692,6 +776,22 @@ impl Qwen3_5ForCausalLM {
 
     pub fn restore_mamba_prefix_state(&self, seq_id: usize, hash: u64) -> Result<bool> {
         self.mamba_cache.write().restore_prefix_state(seq_id, hash)
+    }
+
+    pub fn mtp_rollback_mamba(&self, seq_id: usize, keep_tokens: usize) -> Result<bool> {
+        let mut mamba_cache = self.mamba_cache.write();
+        let slots = mamba_cache
+            .get_slots_for_sequences(&[seq_id])?
+            .into_iter()
+            .map(|s| s as i64)
+            .collect::<Vec<_>>();
+        let seq_slots = Tensor::from_vec(slots, (1,), &self.device)?;
+        for layer in &self.layers {
+            if let Qwen3_5AttnType::LinearAttention(gdn) = &layer.attn {
+                gdn.rollback_mtp_verify(&mut mamba_cache, &seq_slots, keep_tokens)?;
+            }
+        }
+        Ok(true)
     }
 
     pub fn reset_mamba_cache(&self) -> Result<()> {

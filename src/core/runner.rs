@@ -4,6 +4,7 @@ use crate::models::gemma4::Gemma4ForCausalLM;
 use crate::models::layers::distributed::Comm;
 use crate::models::layers::linear::set_linear_is_prefill;
 use crate::models::layers::VarBuilderX;
+use crate::models::qwen3_5_mtp::Qwen3_5MtpHead;
 use crate::server::EmbeddingStrategy;
 use crate::transfer::Transfer;
 #[cfg(all(feature = "cuda", feature = "graph"))]
@@ -55,6 +56,7 @@ pub struct CachedSamplingParams {
     pub presence_penalty: Option<f32>,
 }
 
+#[derive(Clone, Copy)]
 pub enum Seqs<'a> {
     SeqRefs(&'a [&'a Sequence]),
     DecodeVec(&'a Vec<DecodeSequence>),
@@ -115,18 +117,19 @@ pub struct CpuTqLayerCache {
 }
 
 pub struct ModelRunner {
-    model: Model,
+    pub(crate) model: Model,
     gpu_kv_cache: Arc<Mutex<Vec<(Tensor, Tensor)>>>,
     cpu_kv_cache: Arc<Mutex<Vec<(Tensor, Tensor)>>>,
     cpu_tq_cache: Option<Vec<CpuTqLayerCache>>,
-    device: Device,
+    pub(crate) device: Device,
     config: EngineConfig,
     #[cfg(all(feature = "cuda", feature = "graph"))]
-    pub capturer: GraphCapturer<CudaGraphWrapper<CudaGraphFn>>,
+    pub decode_capturer: GraphCapturer<CudaGraphWrapper<CudaGraphFn>>,
+    #[cfg(all(feature = "cuda", feature = "graph"))]
+    pub mtp_capturer: Option<GraphCapturer<CudaGraphWrapper<CudaGraphFn>>>,
     #[cfg(feature = "flashinfer")]
-    flashinfer_kv_params: Option<FlashInferKvParams>,
+    pub(crate) flashinfer_kv_params: Option<FlashInferKvParams>,
     logit_processor: LogitsProcessor,
-    /// Cached sampling strategy computed once during prefill, reused during decode
     cached_sampling: RwLock<Option<CachedSamplingParams>>,
     seq_tokens: RwLock<HashMap<usize, Vec<u32>>>,
     restored_prefix_sequences: RwLock<HashSet<usize>>,
@@ -135,9 +138,12 @@ pub struct ModelRunner {
     guidance_mismatch: RwLock<HashSet<usize>>,
     llg_factory: Option<Arc<ParserFactory>>,
     transfer: Option<Arc<Transfer>>,
-    /// Whether this runner is on the first rank (for logging)
     is_first_rank: bool,
-    model_type: ModelType,
+    pub(crate) model_type: ModelType,
+    /// MTP head for speculative decoding (Qwen3.5 only for now)
+    pub(crate) mtp_head: Option<Arc<Qwen3_5MtpHead>>,
+    /// Number of speculative tokens to draft per step
+    pub(crate) mtp_num_speculative: usize,
 }
 
 impl ModelRunner {
@@ -146,14 +152,31 @@ impl ModelRunner {
     #[cfg(all(feature = "cuda", feature = "graph"))]
     const GRAPH_CAPTURE_MIN_BATCH: usize = 16;
 
-    fn is_mla_model(&self) -> bool {
+    pub(crate) fn is_mla_model(&self) -> bool {
         matches!(
             self.model_type,
             ModelType::GLM4MoeLite | ModelType::DeepSeek
         )
     }
 
-    fn prepare_mamba_slot_mapping(
+    pub(crate) fn model(&self) -> &Model {
+        &self.model
+    }
+
+    pub(crate) fn device(&self) -> &Device {
+        &self.device
+    }
+
+    pub(crate) fn block_size(&self) -> usize {
+        self.config.block_size
+    }
+
+    #[cfg(feature = "flashinfer")]
+    pub(crate) fn flashinfer_kv_params(&self) -> Option<crate::utils::FlashInferKvParams> {
+        self.flashinfer_kv_params
+    }
+
+    pub(crate) fn prepare_mamba_slot_mapping(
         &self,
         sequence_ids: &[usize],
         is_prefill: bool,
@@ -454,6 +477,34 @@ impl ModelRunner {
             }
         );
 
+        #[cfg(all(feature = "cuda", feature = "graph"))]
+        let mtp_wrapper = if econfig.mtp_num_speculative_tokens.unwrap_or(0) > 0 {
+            Some(crate::graph_wrapper!(
+                &model,
+                device,
+                {
+                    Qwen3 => EmbedInputs,
+                    Qwen3MoE => EmbedInputs,
+                    Qwen3_5 => EmbedInputs,
+                    Qwen3_5MoE => EmbedInputs,
+                    LLaMa => EmbedInputs,
+                    LLaMa4 => NoneArg,
+                    Phi4 => EmbedInputs,
+                    GLM4 => EmbedInputs,
+                    GLM4MoE => EmbedInputs,
+                    GLM4MoeLite => EmbedInputs,
+                    DeepSeek => EmbedInputs,
+                    Mistral3VL => NoneArg,
+                    Gemma3 => NoneArg,
+                    Gemma4 => EmbedInputs,
+                    Qwen3VL => NoneArg,
+                    MiniMax => EmbedInputs,
+                }
+            ))
+        } else {
+            None
+        };
+
         let allocator = if let Some(s) = stream {
             use crate::runner::{receive_local, send_local, MessageType};
             use interprocess::TryClone;
@@ -553,18 +604,27 @@ impl ModelRunner {
                 );
             }
         }
+        if is_hybrid_mamba_model && econfig.mtp_num_speculative_tokens.unwrap_or(0) > 0 {
+            // MTP verification mutates Qwen3.5 linear-attention state speculatively.
+            // Keep at least one snapshot per active sequence so rejected drafts can
+            // be rolled back before replaying only the accepted prefix.
+            mamba_prefix_capacity = mamba_prefix_capacity.max(mamba_cache_capacity.max(1));
+        }
         match &model {
             Model::Qwen3_5(model) => {
                 model.preallocate_mamba_cache(mamba_cache_capacity)?;
                 model.set_mamba_prefix_cache_capacity(mamba_prefix_capacity);
+                model.preallocate_mtp_hidden_buffer(econfig.max_num_seqs.max(8))?;
             }
             Model::Qwen3_5MoE(model) => {
                 model.preallocate_mamba_cache(mamba_cache_capacity)?;
                 model.set_mamba_prefix_cache_capacity(mamba_prefix_capacity);
+                model.preallocate_mtp_hidden_buffer(econfig.max_num_seqs.max(8))?;
             }
             Model::Qwen3VL(model) => {
                 model.preallocate_mamba_cache(mamba_cache_capacity)?;
                 model.set_mamba_prefix_cache_capacity(mamba_prefix_capacity);
+                model.preallocate_mtp_hidden_buffer(econfig.max_num_seqs.max(8))?;
             }
             _ => {}
         }
@@ -726,6 +786,61 @@ impl ModelRunner {
             }
         }
 
+        let (mtp_head, mtp_num_speculative) = if let Some(num_spec) =
+            econfig.mtp_num_speculative_tokens
+        {
+            let is_mtp_model_type = matches!(
+                model_type,
+                ModelType::Qwen3_5 | ModelType::Qwen3_5MoE | ModelType::Qwen3VL
+            );
+            let has_mtp_config = config.mtp_num_hidden_layers.unwrap_or(0) > 0;
+            let has_mtp_weights = vb.pp("mtp").has_key("fc.weight")
+                || vb.pp("mtp").has_key("layers.0.mlp.gate_proj.weight")
+                || vb.pp("mtp").has_key("layers.0.mlp.gate.weight");
+
+            if is_mtp_model_type && (has_mtp_config || has_mtp_weights) && has_mtp_weights {
+                match crate::models::qwen3_5_mtp::Qwen3_5MtpHead::new(
+                    vb,
+                    comm.clone(),
+                    config,
+                    dtype,
+                    is_rope_i,
+                    &device,
+                ) {
+                    Ok(head) => {
+                        crate::log_info!(
+                            "MTP head loaded: {} speculative tokens per step",
+                            num_spec
+                        );
+                        (Some(Arc::new(head)), num_spec)
+                    }
+                    Err(e) => {
+                        crate::log_warn!("Failed to load MTP head: {}. MTP disabled.", e);
+                        (None, 0)
+                    }
+                }
+            } else if !is_mtp_model_type {
+                crate::log_info!(
+                    "MTP requested but model type {:?} does not support MTP. MTP disabled.",
+                    model_type
+                );
+                (None, 0)
+            } else if !has_mtp_weights {
+                crate::log_info!(
+                    "MTP requested but model weights do not contain MTP layers. MTP disabled."
+                );
+                (None, 0)
+            } else {
+                crate::log_info!(
+                        "MTP requested but model config has no MTP layers (mtp_num_hidden_layers={}). MTP disabled.",
+                        config.mtp_num_hidden_layers.unwrap_or(0)
+                    );
+                (None, 0)
+            }
+        } else {
+            (None, 0)
+        };
+
         Ok(Self {
             model,
             gpu_kv_cache: Arc::new(Mutex::new(gpu_kv_cache)),
@@ -734,7 +849,7 @@ impl ModelRunner {
             device,
             config: econfig.clone(),
             #[cfg(all(feature = "cuda", feature = "graph"))]
-            capturer: GraphCapturer::new(
+            decode_capturer: GraphCapturer::new(
                 wrapper,
                 graph_capture_max_num_seqs,
                 econfig.max_model_len.unwrap_or(32768),
@@ -744,6 +859,19 @@ impl ModelRunner {
                 &flashinfer_kv_params,
                 matches!(model_type, ModelType::GLM4MoeLite | ModelType::DeepSeek),
             ),
+            #[cfg(all(feature = "cuda", feature = "graph"))]
+            mtp_capturer: mtp_wrapper.map(|w| {
+                GraphCapturer::new(
+                    w,
+                    graph_capture_max_num_seqs,
+                    econfig.max_model_len.unwrap_or(32768),
+                    econfig.block_size,
+                    config.hidden_size,
+                    #[cfg(feature = "flashinfer")]
+                    &flashinfer_kv_params,
+                    matches!(model_type, ModelType::GLM4MoeLite | ModelType::DeepSeek),
+                )
+            }),
             #[cfg(feature = "flashinfer")]
             flashinfer_kv_params,
             logit_processor: LogitsProcessor::new(seed, temperature, top_k, top_p),
@@ -757,7 +885,29 @@ impl ModelRunner {
             transfer,
             is_first_rank: comm.rank() == 0,
             model_type,
+            mtp_head,
+            mtp_num_speculative,
         })
+    }
+
+    /// Initialize MTP head for speculative decoding.
+    /// Should be called after model construction when MTP is enabled.
+    pub fn init_mtp(
+        &mut self,
+        mtp_head: Arc<Qwen3_5MtpHead>,
+        num_speculative: usize,
+    ) -> Result<()> {
+        self.mtp_head = Some(mtp_head);
+        self.mtp_num_speculative = num_speculative;
+        crate::log_info!(
+            "MTP initialized: {} speculative tokens per step",
+            num_speculative,
+        );
+        Ok(())
+    }
+
+    pub fn has_mtp(&self) -> bool {
+        self.mtp_head.is_some() && self.mtp_num_speculative > 0
     }
 
     pub fn get_kv_cache(&self) -> MutexGuard<'_, Vec<(Tensor, Tensor)>> {
@@ -882,33 +1032,33 @@ impl ModelRunner {
             let input_batch = input_ids.dim(0)?;
             let require_exact_graph = input_metadata.mamba_slot_mapping.is_some();
             let can_replay = if require_exact_graph {
-                self.capturer.is_exact_captured(input_batch)
+                self.decode_capturer.is_exact_captured(input_batch)
             } else {
-                self.capturer.is_captured(input_batch)
+                self.decode_capturer.is_captured(input_batch)
             };
             if !is_prefill && can_replay {
                 let logits = match &self.model {
                     Model::Qwen3_5(model) => {
                         let _guard = model.lock_mamba_cache_for_graph();
-                        self.capturer
+                        self.decode_capturer
                             .replay(&input_ids, &positions, &input_metadata)?
                     }
                     Model::Qwen3_5MoE(model) => {
                         let _guard = model.lock_mamba_cache_for_graph();
-                        self.capturer
+                        self.decode_capturer
                             .replay(&input_ids, &positions, &input_metadata)?
                     }
                     Model::Qwen3VL(model) => {
                         if let Some(_guard) = model.lock_mamba_cache_for_graph() {
-                            self.capturer
+                            self.decode_capturer
                                 .replay(&input_ids, &positions, &input_metadata)?
                         } else {
-                            self.capturer
+                            self.decode_capturer
                                 .replay(&input_ids, &positions, &input_metadata)?
                         }
                     }
                     _ => self
-                        .capturer
+                        .decode_capturer
                         .replay(&input_ids, &positions, &input_metadata)?,
                 };
                 let output_ids = self.sample(&logits, seqs, is_prefill)?;
@@ -1289,6 +1439,7 @@ impl ModelRunner {
                         params.out_dtype,
                         None,
                         Some(params.kv_dtype),
+                        false,
                     )?)
                 }
             };
@@ -1335,12 +1486,16 @@ impl ModelRunner {
             max_context_len,
             seqlens: Some(cu_seqlens_q_vec[1..].to_vec()),
             flashinfer_metadata,
+            is_mtp_verify: false,
         };
 
         Ok((input_ids, positions, input_metadata))
     }
 
-    fn prepare_decode<'a, I, S>(&self, seqs: I) -> Result<(Tensor, Tensor, InputMetadata)>
+    pub(crate) fn prepare_decode<'a, I, S>(
+        &self,
+        seqs: I,
+    ) -> Result<(Tensor, Tensor, InputMetadata)>
     where
         I: IntoIterator<Item = &'a S>,
         S: ToDecodeInput + 'a,
@@ -1351,15 +1506,34 @@ impl ModelRunner {
         let mut context_lens = Vec::new();
 
         let seq_refs: Vec<&'a S> = seqs.into_iter().collect(); // only references, no clone
+        let mut active_block_tables = Vec::with_capacity(seq_refs.len());
 
         for seq in &seq_refs {
+            let seq_len = seq.len();
+            if seq_len == 0 {
+                candle_core::bail!("Cannot decode an empty sequence");
+            }
+            let active_num_blocks = seq_len.div_ceil(self.config.block_size);
+            let block_table = seq.block_table();
+            if active_num_blocks > block_table.len() {
+                candle_core::bail!(
+                    "Decode sequence {} needs {} KV blocks for {} tokens, but only {} are allocated",
+                    seq.id(),
+                    active_num_blocks,
+                    seq_len,
+                    block_table.len()
+                );
+            }
+            let active_block_table = block_table[..active_num_blocks].to_vec();
+            let last_block_tokens = (seq_len - 1) % self.config.block_size + 1;
+            let last_block = active_block_table[active_num_blocks - 1];
+
             input_ids.push(seq.last_token());
-            positions.push((seq.len() - 1) as i64);
-            context_lens.push(seq.len() as u32);
-            let slot = seq.block_table_last() * self.config.block_size as u32
-                + seq.last_block_tokens() as u32
-                - 1;
+            positions.push((seq_len - 1) as i64);
+            context_lens.push(seq_len as u32);
+            let slot = last_block * self.config.block_size as u32 + last_block_tokens as u32 - 1;
             slot_mapping.push(slot as i64);
+            active_block_tables.push(active_block_table);
         }
 
         // Create tensors
@@ -1372,7 +1546,20 @@ impl ModelRunner {
 
         let slot_mapping = Tensor::from_vec(slot_mapping, (s_len,), &self.device)?;
         let context_lens = Tensor::from_vec(context_lens, (c_len,), &self.device)?;
-        let block_tables = self.prepare_block_tables(seq_refs.clone())?;
+        let max_active_blocks = active_block_tables.iter().map(Vec::len).max().unwrap_or(0);
+        let mut flat_block_tables = Vec::with_capacity(seq_refs.len() * max_active_blocks);
+        for block_table in &active_block_tables {
+            flat_block_tables.extend_from_slice(block_table);
+            flat_block_tables.resize(
+                flat_block_tables.len() + max_active_blocks - block_table.len(),
+                0,
+            );
+        }
+        let block_tables = Tensor::from_vec(
+            flat_block_tables,
+            (seq_refs.len(), max_active_blocks),
+            &self.device,
+        )?;
 
         #[cfg(feature = "flashinfer")]
         let flashinfer_metadata = if self.flashinfer_kv_params.is_some() {
@@ -1384,9 +1571,9 @@ impl ModelRunner {
                     _ => false,
                 };
                 if require_exact_graph {
-                    self.capturer.is_exact_captured(seq_refs.len())
+                    self.decode_capturer.is_exact_captured(seq_refs.len())
                 } else {
-                    self.capturer.is_captured(seq_refs.len())
+                    self.decode_capturer.is_captured(seq_refs.len())
                 }
             };
             #[cfg(not(all(feature = "cuda", feature = "graph")))]
@@ -1395,8 +1582,7 @@ impl ModelRunner {
             let mut indptr = vec![0u32];
             let mut indices = Vec::new();
             let mut last_len = Vec::new();
-            for seq in &seq_refs {
-                let bt = seq.block_table();
+            for (seq, bt) in seq_refs.iter().zip(active_block_tables.iter()) {
                 indices.extend(bt.iter().map(|&x| x as u32));
                 indptr.push(indices.len() as u32);
                 let len = seq.len();
@@ -1484,12 +1670,13 @@ impl ModelRunner {
             max_context_len,
             seqlens: None,
             flashinfer_metadata,
+            is_mtp_verify: false,
         };
 
         Ok((input_ids, positions, input_metadata))
     }
 
-    fn sample(&self, logits: &Tensor, seqs: Seqs, is_prefill: bool) -> Result<Vec<u32>> {
+    pub(crate) fn sample(&self, logits: &Tensor, seqs: Seqs, is_prefill: bool) -> Result<Vec<u32>> {
         let seq_ids: Vec<usize> = match &seqs {
             Seqs::SeqRefs(seqs) => seqs.iter().map(|s| s.id()).collect(),
             Seqs::DecodeVec(v) => v.iter().map(|s| s.id()).collect(),
@@ -1713,8 +1900,25 @@ impl ModelRunner {
 
     #[cfg(all(feature = "cuda", feature = "graph"))]
     pub fn warmup_capture(&mut self) -> Result<()> {
-        let kv_cache_lock = self.gpu_kv_cache.lock().unwrap(); // no custom method call on `self`
-        self.capturer.capture(&self.device, Some(&kv_cache_lock))?;
+        let kv_cache_lock = self.gpu_kv_cache.lock().unwrap();
+        self.decode_capturer
+            .capture(&self.device, Some(&kv_cache_lock))?;
+
+        if self.mtp_num_speculative > 0 {
+            // self.decode_capturer.model.sync()?;
+            if let Some(mtp_cap) = &mut self.mtp_capturer {
+                crate::log_info!(
+                    "Capturing MTP verify graphs for up to {} draft tokens...",
+                    self.mtp_num_speculative
+                );
+                mtp_cap.capture_mtp(
+                    &self.device,
+                    Some(&kv_cache_lock),
+                    self.mtp_num_speculative,
+                )?;
+            }
+        }
+
         match &self.model {
             Model::Qwen3_5(model) => model.reset_mamba_cache()?,
             Model::Qwen3_5MoE(model) => model.reset_mamba_cache()?,

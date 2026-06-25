@@ -31,7 +31,6 @@ use crate::utils::{get_runner_path, init_config_tokenizer, spawn_runner};
 use crate::{log_info, log_warn};
 use candle_core::{DType, Result};
 use colored::Colorize;
-use either::Either;
 use futures::future::join_all;
 use interprocess::local_socket::traits::Listener;
 use interprocess::local_socket::{GenericNamespaced, ToNsName};
@@ -1001,6 +1000,16 @@ impl LLMEngine {
             }
         }
 
+        // Pre-allocate blocks for MTP speculative positions before cloning sequences
+        if !is_prefill {
+            if let Some(mtp_tokens) = self.econfig.mtp_num_speculative_tokens {
+                if mtp_tokens > 0 {
+                    self.scheduler
+                        .pre_allocate_mtp_blocks(&scheduled_ids, mtp_tokens + 1);
+                }
+            }
+        }
+
         let seqs = self.scheduler.get_sequences(&scheduled_ids);
         let owned_seqs: Vec<Sequence> = seqs.iter().map(|s| (*s).clone()).collect();
         Ok(Some((scheduled_ids, is_prefill, owned_seqs)))
@@ -1125,48 +1134,179 @@ impl LLMEngine {
         }
     }
 
+    /// Run MTP speculative decode forward pass.
+    /// Returns Vec<Vec<u32>> where each inner vec contains all accepted tokens for that sequence.
+    fn run_forward_mtp(
+        runners: &Arc<RwLock<RunnerType>>,
+        owned_seqs: &[Sequence],
+    ) -> Result<Vec<Vec<u32>>> {
+        match &mut *runners.write() {
+            RunnerType::Thread(model_runner) => {
+                let seq_refs: Vec<&Sequence> = owned_seqs.iter().collect();
+                model_runner.run_mtp_decode(Seqs::SeqRefs(&seq_refs))
+            }
+            RunnerType::Process(ref mut runner_streams) => {
+                use crate::runner::{receive_local, send_local, MessageType};
+                use interprocess::TryClone;
+
+                let sequences = owned_seqs
+                    .iter()
+                    .map(|s| DecodeSequence::new(s))
+                    .collect::<Vec<_>>();
+                let request = MessageType::RunDecodeMTP(sequences);
+
+                let cloned_streams: Vec<LocalStream> = runner_streams
+                    .iter_mut()
+                    .map(|s| s.try_clone().expect("clone failed"))
+                    .collect();
+
+                if let Some(mut stream) = cloned_streams.into_iter().next() {
+                    send_local(&mut vec![stream.try_clone()?], &request, false)?;
+                    let response = receive_local(&mut stream, false)?;
+                    match response {
+                        MessageType::RunResponseMTP(multi_tokens) => {
+                            if multi_tokens.is_empty() {
+                                candle_core::bail!("MTP runner returned empty response")
+                            }
+                            Ok(multi_tokens)
+                        }
+                        other => {
+                            candle_core::bail!("Unexpected MTP response type: {:?}", other)
+                        }
+                    }
+                } else {
+                    candle_core::bail!("No runner streams available for MTP")
+                }
+            }
+            RunnerType::MultiNodeMaster {
+                ref mut local_streams,
+                ref mut remote_streams,
+            } => {
+                use crate::runner::{receive_local, send_local, MessageType};
+                use interprocess::TryClone;
+
+                let sequences = owned_seqs
+                    .iter()
+                    .map(|s| DecodeSequence::new(s))
+                    .collect::<Vec<_>>();
+                let request = MessageType::RunDecodeMTP(sequences);
+                let serialized =
+                    bincode::serialize(&request).expect("Bincode serialization failed");
+
+                for tcp_stream in remote_streams.iter_mut() {
+                    if let Err(e) = crate::utils::multi_node::send_tcp(tcp_stream, &serialized) {
+                        candle_core::bail!("Failed to send MTP forward to remote worker: {}", e);
+                    }
+                }
+
+                let cloned_streams: Vec<LocalStream> = local_streams
+                    .iter_mut()
+                    .map(|s| s.try_clone().expect("clone failed"))
+                    .collect();
+
+                let result = if let Some(mut stream) = cloned_streams.into_iter().next() {
+                    send_local(&mut vec![stream.try_clone()?], &request, false)?;
+                    let response = receive_local(&mut stream, false)?;
+                    match response {
+                        MessageType::RunResponseMTP(multi_tokens) => {
+                            if multi_tokens.is_empty() {
+                                candle_core::bail!("MTP runner returned empty response")
+                            }
+                            Ok(multi_tokens)
+                        }
+                        other => {
+                            candle_core::bail!("Unexpected MTP response type: {:?}", other)
+                        }
+                    }
+                } else {
+                    candle_core::bail!("No local runner streams available for MTP")
+                };
+
+                for tcp_stream in remote_streams.iter_mut() {
+                    let _ = crate::utils::multi_node::recv_tcp(tcp_stream);
+                }
+
+                result
+            }
+        }
+    }
+
     /// Phase 3: Postprocess forward pass results, deliver tokens, and do maintenance.
+    /// Handles both single-token (normal decode/prefill) and multi-token (MTP) outputs.
     pub fn finish_step(
         &mut self,
         scheduled_ids: Vec<usize>,
         is_prefill: bool,
-        output_ids: Vec<u32>,
+        multi_output_ids: Vec<Vec<u32>>,
     ) -> Result<usize> {
-        pub struct DecodedIds(Either<Vec<usize>, Vec<usize>>);
+        if scheduled_ids.len() != multi_output_ids.len() {
+            candle_core::bail!(
+                "Forward output count mismatch: {} scheduled sequence(s), {} output row(s)",
+                scheduled_ids.len(),
+                multi_output_ids.len()
+            );
+        }
 
-        let decoded_ids = if is_prefill {
+        // `scheduled_ids` are indexes into scheduler.running, while
+        // `multi_output_ids` is dense and ordered by position in scheduled_ids.
+        // Keep that association explicit; a running index is not an output index.
+        let (indices, output_by_running_index) = if is_prefill {
             let (indices, finished_indices) =
                 self.scheduler.filter_prefill_finished(&scheduled_ids);
             if indices.is_empty() {
                 self.check_canceled(None);
                 return Ok(0);
             } else {
-                let output_ids: Vec<u32> = indices.iter().map(|&i| output_ids[i]).collect();
-                self.scheduler.postprocess(&finished_indices, &output_ids);
-                DecodedIds(Either::Left(finished_indices))
+                if indices.len() != finished_indices.len() {
+                    candle_core::bail!(
+                        "Prefill result mapping mismatch: {} output position(s), {} running sequence(s)",
+                        indices.len(),
+                        finished_indices.len()
+                    );
+                }
+                let wrapped: Vec<Vec<u32>> = indices
+                    .iter()
+                    .map(|&output_idx| {
+                        multi_output_ids.get(output_idx).cloned().ok_or_else(|| {
+                            candle_core::Error::msg(format!(
+                                "Prefill output index {} out of range for {} output row(s)",
+                                output_idx,
+                                multi_output_ids.len()
+                            ))
+                        })
+                    })
+                    .collect::<Result<_>>()?;
+                self.scheduler.postprocess(&finished_indices, &wrapped);
+                let output_map = finished_indices
+                    .iter()
+                    .copied()
+                    .zip(wrapped)
+                    .collect::<HashMap<_, _>>();
+                (finished_indices, output_map)
             }
         } else {
-            self.scheduler.postprocess(&scheduled_ids, &output_ids);
-            DecodedIds(Either::Left(scheduled_ids))
-        };
-
-        let (indices, is_running): (&Vec<usize>, bool) = match &decoded_ids.0 {
-            Either::Left(indices) => (indices, true),
-            Either::Right(indices) => (indices, false),
+            self.scheduler
+                .postprocess(&scheduled_ids, &multi_output_ids);
+            let output_map = scheduled_ids
+                .iter()
+                .copied()
+                .zip(multi_output_ids)
+                .collect::<HashMap<_, _>>();
+            (scheduled_ids, output_map)
         };
 
         let mut prefill_batch: Vec<(usize, usize, f32, bool)> = Vec::new();
-        for &idx in indices {
-            let sq = if is_running {
-                self.scheduler.get_running(idx)
-            } else {
-                self.scheduler.get_waiting(idx)
-            };
+        for &idx in &indices {
+            let step_tokens = output_by_running_index.get(&idx).ok_or_else(|| {
+                candle_core::Error::msg(format!(
+                    "Missing forward output for running sequence index {}",
+                    idx
+                ))
+            })?;
+            let sq = self.scheduler.get_running(idx);
             if let Some(s) = sq {
                 let seq_id = s.id;
                 if s.is_finished() {
-                    // Normal finish handling
-
                     if let Some(sender) = self.stream_senders.get_mut(&seq_id) {
                         if let Some(request_type) = self.request_types.get(&seq_id) {
                             let prompt_start_time = s.created_time();
@@ -1185,7 +1325,6 @@ impl LLMEngine {
                             };
 
                             if s.is_tool_call_end {
-                                //finish early, we need to send the last token
                                 if *request_type == RequestType::Stream {
                                     if let Some(decoder) = self.stream_decoders.get_mut(&seq_id) {
                                         if let Some(tok) = decoder.step(s.last_token)? {
@@ -1199,6 +1338,17 @@ impl LLMEngine {
                             }
 
                             if *request_type == RequestType::Stream {
+                                let num_appended = s.output_ids.len()
+                                    - self.decode_length.get(&seq_id).copied().unwrap_or(0);
+                                let tokens_to_stream =
+                                    &step_tokens[..num_appended.min(step_tokens.len())];
+                                for &tok in tokens_to_stream {
+                                    if let Some(decoder) = self.stream_decoders.get_mut(&seq_id) {
+                                        if let Some(text) = decoder.step(tok)? {
+                                            let _ = sender.try_send(StreamItem::Token(text, tok));
+                                        }
+                                    }
+                                }
                                 let _ = sender.try_send(StreamItem::Done((
                                     prompt_start_time,
                                     decode_start_time,
@@ -1255,13 +1405,14 @@ impl LLMEngine {
                         *length = s.output_len();
                     }
 
-                    let mut token_ids =
-                        if self.is_pd_mode() && s.pd_first_token.is_some() && s.output_len() == 2 {
-                            // Special case, the real first token is generated on PD server
-                            vec![s.pd_first_token.unwrap_or(s.last_token), s.last_token]
-                        } else {
-                            vec![s.last_token]
-                        };
+                    let mut token_ids = if step_tokens.len() > 1 {
+                        step_tokens.to_vec()
+                    } else if self.is_pd_mode() && s.pd_first_token.is_some() && s.output_len() == 2
+                    {
+                        vec![s.pd_first_token.unwrap_or(s.last_token), s.last_token]
+                    } else {
+                        vec![s.last_token]
+                    };
                     if let Some(mut replay_ids) = self.take_prompt_replay_token_ids(seq_id) {
                         replay_ids.extend(token_ids);
                         token_ids = replay_ids;
@@ -1286,13 +1437,7 @@ impl LLMEngine {
                                     }
                                 }
                             } else {
-                                //completion request will be decoded at the final stage (at once)
                                 for token_id in token_ids {
-                                    /*
-                                        Check if the receiver is still active.
-                                        If the client disconnected, collect_sync_results will be dropped,
-                                        dropping the receiver, causing try_send to fail.
-                                    */
                                     if let Err(_) = sender.try_send(StreamItem::TokenID(token_id)) {
                                         crate::log_error!(
                                             "Error when sending token to client [seq_id {}]",
@@ -1352,7 +1497,7 @@ impl LLMEngine {
         } else {
             self.check_canceled(None);
         }
-        if self.econfig.server_mode.unwrap_or(true) && is_running {
+        if self.econfig.server_mode.unwrap_or(true) {
             self.may_print_decoding_throughput(&indices);
         }
         Ok(indices.len())
@@ -1994,11 +2139,13 @@ impl LLMEngine {
     pub fn start_engine(engine: Arc<RwLock<Self>>) {
         GLOBAL_RT.spawn(async move {
             let engine = engine.clone();
-            let (is_pd_server, runners) = {
+            let (is_pd_server, runners, mtp_enabled) = {
                 let guard = engine.read();
+                let has_mtp = guard.econfig.mtp_num_speculative_tokens.is_some();
                 (
                     guard.is_pd_mode() && guard.is_pd_server(),
                     guard.runners.clone(),
+                    has_mtp,
                 )
             };
             loop {
@@ -2031,12 +2178,19 @@ impl LLMEngine {
                 // Engine lock released -- server can accept new requests during forward pass
 
                 if let Some((scheduled_ids, is_prefill, owned_seqs)) = prep {
-                    // Phase 2: Forward pass (only runner lock, engine lock FREE)
-                    match Self::run_forward(&runners, &owned_seqs, is_prefill) {
-                        Ok(output_ids) => {
-                            // Phase 3: Postprocess (engine lock held briefly)
+                    let use_mtp = mtp_enabled && !is_prefill && owned_seqs.len() == 1;
+
+                    let forward_result: Result<Vec<Vec<u32>>> = if use_mtp {
+                        Self::run_forward_mtp(&runners, &owned_seqs)
+                    } else {
+                        Self::run_forward(&runners, &owned_seqs, is_prefill)
+                            .map(|ids| ids.into_iter().map(|t| vec![t]).collect())
+                    };
+
+                    match forward_result {
+                        Ok(multi_output_ids) => {
                             let mut guard = engine.write();
-                            match guard.finish_step(scheduled_ids, is_prefill, output_ids) {
+                            match guard.finish_step(scheduled_ids, is_prefill, multi_output_ids) {
                                 Ok(n) => task_processed = n,
                                 Err(e) => {
                                     crate::log_error!("[Engine Loop] Finish error: {:?}", e);
