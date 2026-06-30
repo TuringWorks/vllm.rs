@@ -135,9 +135,10 @@ Add `--kvcache-dtype` to compress KV cache and extend context length:
 * ✅ Qwen3.5/3.6 Dense/MoE (27B, 35B, 122B, 397B, Multimodal model)
 * ✅ Mistral v1, v2
 * ✅ Mistral-3-VL Reasoning (3B, 8B, 14B, Multimodal model)
-* ✅ GLM4 (0414, **Not ChatGLM**)
+* ✅ GLM4 (0414)
 * ✅ GLM4 MoE (4.6/4.7)
 * ✅ GLM4.7 Flash
+* ✅ GLM 5.2 (DeepSeek V3.2 DSA architecture)
 * ✅ DeepSeek V3/R1/V3.2
 * ✅ Phi3 / Phi4 (Phi-3, Phi-4, Phi-4-mini, etc.)
 * ✅ Gemma3/**Gemma4** (Multimodal model)
@@ -216,6 +217,9 @@ xinfer --m olka-fi/Qwen3.5-4B-MXFP4
 # GGUF model (4-bit KvCache)
 xinfer --m unsloth/Qwen3.5-27B-GGUF --f Qwen3.5-27B-Q4_K_M.gguf --kvcache-dtype turbo4
 
+# Multi-shard 5.2 GGUF (auto-detected from HF subfolder)
+xinfer --d 0,1,2,3 --m unsloth/Qwen3.5-122B-A10B-GGUF --f Q3_K_M --kvcache-dtype fp8
+
 # FP8 on Metal
 xinfer --m Qwen/Qwen3.5-4B-FP8
 
@@ -230,6 +234,12 @@ xinfer --i --m unsloth/Qwen3.5-27B-GGUF --f Qwen3.5-27B-Q4_K_M.gguf
 
 # Faster GDN prefill on Hopper with slight precision loss
 SM90_LOWER_PRECISION_GDN_PREFILL=1 xinfer --m Qwen/Qwen3.5-35B-A3B-FP8
+
+# MultiNode: GLM 5.2 (DeepSeek V3.2 architecture, FP8)
+# Master node
+xinfer --d 0,1,2,3,4,5,6,7 --m zai-org/GLM-5.2-FP8 --num-nodes 2 --node-rank 0 --master-addr 192.168.xxx.xxx
+# Other node(s)
+xinfer --d 0,1,2,3,4,5,6,7 --m zai-org/GLM-5.2-FP8 --num-nodes 2 --node-rank 1 --master-addr 192.168.xxx.xxx
 ```
 
 <details>
@@ -262,7 +272,7 @@ xinfer --m unsloth/Qwen3.5-27B-GGUF --f Qwen3.5-27B-Q4_K_M.gguf
 xinfer --d 0,1 --m /path/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf
 
 # Local GGUF folder
-xinfer --d 0,1,2,3 --m /path/to/model-GGUF/
+xinfer --d 0,1,2,3 --m /path/to/Qwen3.5-122B-A10B-GGUF/Q3_K_M
 ```
 
 </details>
@@ -543,7 +553,8 @@ SM90_LOWER_PRECISION_GDN_PREFILL=1 xinfer --m Qwen/Qwen3.5-35B-A3B-FP8 --ui-serv
 * [x] FP8 KV Cache (with FlashInfer, SM80+)
 * [x] TurboQuant KV Cache (2-4 bit compression with WHT rotation)
 * [x] FP8 Models (CUDA: MoE, Dense; Metal: Dense)
-* [ ] Additional model support (Kimi K2, GLM 5.1 etc.)
+* [x] GLM 5.2 (DeepSeek V3.2 + DSA)
+* [ ] Additional model support (Kimi K2, etc.)
 * [x] CPU KV Cache Offloading
 * [x] Prefill-decode Disaggregation (CUDA)
 * [x] Prefill-decode Disaggregation (Metal)

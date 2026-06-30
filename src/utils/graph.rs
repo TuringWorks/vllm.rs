@@ -638,6 +638,10 @@ impl<M: CudaGraphModule> GraphCapturer<M> {
                         &input_metadata,
                         false,
                     )?;
+                    #[cfg(feature = "cuda")]
+                    if !should_capture {
+                        device.synchronize()?;
+                    }
                 } else {
                     let out = self.model.forward(
                         &input_ids_bs,
@@ -652,6 +656,8 @@ impl<M: CudaGraphModule> GraphCapturer<M> {
                     self.model.end_capture(!phase.is_warmup())?;
                 }
             }
+            #[cfg(feature = "cuda")]
+            device.synchronize()?;
         }
         let _ = self.model.report_graph_pool_usage();
         crate::log_warn!("Captured batches {:?}", outputs.keys());

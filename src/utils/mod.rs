@@ -152,6 +152,8 @@ pub fn config_from_gguf<R: std::io::Seek + std::io::Read>(
         "gemma3" => "Gemma3ForConditionalGeneration".to_string(),
         "gemma4" => "Gemma4ForConditionalGeneration".to_string(),
         "mistral3" => "Mistral3ForConditionalGeneration".to_string(),
+        "glm-dsa" => "GlmMoeDsaForCausalLM".to_string(),
+        "deepseek2" => "DeepseekV3ForCausalLM".to_string(),
         _ => arch.clone(),
     };
 
@@ -360,7 +362,11 @@ pub fn config_from_gguf<R: std::io::Seek + std::io::Read>(
             .ok()
             .map(|v| v as usize)
     };
-    let md_opt_f64 = |key: &str| md_get(key).and_then(|v| v.to_f64()).ok();
+    let md_opt_f64 = |key: &str| {
+        md_get(key)
+            .and_then(|v| v.to_f64().or_else(|_| v.to_f32().map(|f| f as f64)))
+            .ok()
+    };
     let md_opt_bool = |key: &str| md_get(key).and_then(|v| v.to_bool()).ok();
     let md_opt_string = |key: &str| {
         md_get(key)
@@ -409,7 +415,10 @@ pub fn config_from_gguf<R: std::io::Seek + std::io::Read>(
         } else {
             None
         }
-    } else if matches!(arch.as_str(), "qwen3moe" | "qwen2moe" | "qwen35moe") {
+    } else if matches!(
+        arch.as_str(),
+        "qwen3moe" | "qwen2moe" | "qwen35moe" | "glm-dsa" | "deepseek2"
+    ) {
         let expert_feed_forward_length =
             md_get(format!("{arch}.expert_feed_forward_length").as_str())?.to_u32()? as usize;
         let expert_weights_norm = md_get(format!("{arch}.expert_weights_norm").as_str());
@@ -421,7 +430,10 @@ pub fn config_from_gguf<R: std::io::Seek + std::io::Read>(
 
         let expert_weights_scale = md_get(format!("{arch}.expert_weights_scale").as_str());
         let expert_weights_scale = if expert_weights_scale.is_ok() {
-            expert_weights_scale.unwrap().to_f64().ok()
+            let v = expert_weights_scale.unwrap();
+            v.to_f64()
+                .ok()
+                .or_else(|| v.to_f32().ok().map(|f| f as f64))
         } else {
             None
         };
@@ -444,7 +456,7 @@ pub fn config_from_gguf<R: std::io::Seek + std::io::Read>(
             md_get(format!("{arch}.expert_shared_feed_forward_length").as_str());
         let expert_shared_feed_forward_length = if expert_shared_feed_forward_length.is_ok() {
             Some(expert_shared_feed_forward_length.unwrap().to_u32()? as usize)
-        } else if arch.to_string() == "glm4moe" {
+        } else if arch == "glm4moe" || arch == "glm-dsa" || arch == "deepseek2" {
             Some(expert_feed_forward_length)
         } else {
             None
@@ -477,11 +489,32 @@ pub fn config_from_gguf<R: std::io::Seek + std::io::Read>(
             n_shared_experts: expert_shared_count,
             routed_scaling_factor: expert_weights_scale
                 .or_else(|| md_opt_f64(format!("{arch}.routed_scaling_factor").as_str())),
-            n_group: md_opt_usize(format!("{arch}.n_group").as_str()),
-            topk_group: md_opt_usize(format!("{arch}.topk_group").as_str()),
+            n_group: md_opt_usize(format!("{arch}.n_group").as_str())
+                .or_else(|| md_opt_usize(format!("{arch}.expert_group_count").as_str())),
+            topk_group: md_opt_usize(format!("{arch}.topk_group").as_str())
+                .or_else(|| md_opt_usize(format!("{arch}.expert_group_used_count").as_str())),
             scoring_func: md_opt_string(format!("{arch}.scoring_func").as_str()),
             topk_method: md_opt_string(format!("{arch}.topk_method").as_str()),
         })
+    } else {
+        None
+    };
+
+    let moe_cfg = if let Some(mut cfg) = moe_cfg {
+        if cfg.scoring_func.is_none() {
+            if let Ok(gating_func) =
+                md_get(format!("{arch}.expert_gating_func").as_str()).and_then(|v| v.to_u32())
+            {
+                cfg.scoring_func = Some(match gating_func {
+                    2 => "sigmoid".to_string(),
+                    _ => "softmax".to_string(),
+                });
+            }
+        }
+        if cfg.topk_method.is_none() && cfg.scoring_func.as_deref() == Some("sigmoid") {
+            cfg.topk_method = Some("noaux_tc".to_string());
+        }
+        Some(cfg)
     } else {
         None
     };
@@ -572,6 +605,67 @@ pub fn config_from_gguf<R: std::io::Seek + std::io::Read>(
             })
             .to_string(),
         )
+    } else if arch == "glm-dsa" || arch == "deepseek2" {
+        let q_lora_rank = md_opt_usize(format!("{arch}.attention.q_lora_rank").as_str());
+        let kv_lora_rank = md_opt_usize(format!("{arch}.attention.kv_lora_rank").as_str());
+        let key_length_mla = md_opt_usize(format!("{arch}.attention.key_length_mla").as_str());
+        let v_head_dim = md_opt_usize(format!("{arch}.attention.value_length_mla").as_str());
+        let qk_rope_head_dim = md_opt_usize(format!("{arch}.rope.dimension_count").as_str());
+        // key_length_mla == qk_nope_head_dim + qk_rope_head_dim for both glm-dsa and deepseek2
+        let qk_nope_head_dim = match (key_length_mla, qk_rope_head_dim) {
+            (Some(kl), Some(rd)) => Some(kl - rd),
+            _ => key_length_mla,
+        };
+
+        let index_head_dim = md_opt_usize(format!("{arch}.attention.indexer.key_length").as_str());
+        let index_n_heads = md_opt_usize(format!("{arch}.attention.indexer.head_count").as_str());
+        let index_topk = md_opt_usize(format!("{arch}.attention.indexer.top_k").as_str());
+        let index_skip_topk_offset =
+            md_opt_usize(format!("{arch}.leading_dense_block_count").as_str());
+
+        let expert_weights_scale = md_opt_f64(format!("{arch}.expert_weights_scale").as_str());
+
+        let arch_label = if arch == "glm-dsa" {
+            "GlmMoeDsaForCausalLM"
+        } else {
+            "DeepseekV3ForCausalLM"
+        };
+        let mut json_obj = serde_json::json!({
+            "architectures": [arch_label],
+        });
+        let obj = json_obj.as_object_mut().unwrap();
+        if let Some(v) = q_lora_rank {
+            obj.insert("q_lora_rank".into(), serde_json::json!(v));
+        }
+        if let Some(v) = kv_lora_rank {
+            obj.insert("kv_lora_rank".into(), serde_json::json!(v));
+        }
+        if let Some(v) = qk_nope_head_dim {
+            obj.insert("qk_nope_head_dim".into(), serde_json::json!(v));
+        }
+        if let Some(v) = v_head_dim {
+            obj.insert("v_head_dim".into(), serde_json::json!(v));
+        }
+        if let Some(v) = qk_rope_head_dim {
+            obj.insert("qk_rope_head_dim".into(), serde_json::json!(v));
+        }
+        if let Some(v) = index_head_dim {
+            obj.insert("index_head_dim".into(), serde_json::json!(v));
+        }
+        if let Some(v) = index_n_heads {
+            obj.insert("index_n_heads".into(), serde_json::json!(v));
+        }
+        if let Some(v) = index_topk {
+            obj.insert("index_topk".into(), serde_json::json!(v));
+        }
+        if let Some(v) = index_skip_topk_offset {
+            obj.insert("index_skip_topk_offset".into(), serde_json::json!(v));
+        }
+        if let Some(v) = expert_weights_scale {
+            obj.insert("routed_scaling_factor".into(), serde_json::json!(v));
+        }
+
+        Some(json_obj.to_string())
     } else if matches!(arch.as_str(), "qwen35" | "qwen35moe") {
         let conv_kernel_size =
             md_get(format!("{arch}.ssm.conv_kernel").as_str())?.to_u32()? as usize;
@@ -1365,6 +1459,19 @@ pub fn init_config_tokenizer(
             }
         }
 
+        // Extract rope_theta from rope_parameters for models that use that format (e.g. GlmMoeDsa)
+        if config.rope_theta.is_none() {
+            if let Some(ref extra) = config.extra_config_json {
+                if let Ok(root) = serde_json::from_str::<serde_json::Value>(extra) {
+                    if let Some(rp) = root.get("rope_parameters") {
+                        if let Some(theta) = rp.get("rope_theta").and_then(|v| v.as_f64()) {
+                            config.rope_theta = Some(theta);
+                        }
+                    }
+                }
+            }
+        }
+
         if let Some(qcfg) = &mut config.quantization_config {
             qcfg.normalize_compressed_tensors();
             if let Some(mode) = &qcfg.mode {
@@ -1408,6 +1515,7 @@ pub fn init_config_tokenizer(
                     | "DeepseekV3ForCausalLM"
                     | "DeepseekV32ForCausalLM"
                     | "DeepseekForCausalLM"
+                    | "GlmMoeDsaForCausalLM"
                     | "Qwen3_5MoeForCausalLM"
                     | "Qwen3_5MoeForConditionalGeneration"
                     | "Qwen3NextForCausalLM"
@@ -1824,7 +1932,11 @@ pub fn is_no_cuda_graph_supprt(architectures: String) -> bool {
 
     #[cfg(not(feature = "flashinfer"))]
     {
-        black_list.extend(vec!["Glm4MoeLiteForCausalLM", "DeepseekV3ForCausalLM"]);
+        black_list.extend(vec![
+            "Glm4MoeLiteForCausalLM",
+            "DeepseekV3ForCausalLM",
+            "GlmMoeDsaForCausalLM",
+        ]);
     }
 
     black_list.contains(&architectures.as_str())
@@ -1845,6 +1957,7 @@ pub fn get_arch_rope(
         ("DeepseekV3ForCausalLM", false),
         ("DeepseekV32ForCausalLM", false),
         ("DeepseekForCausalLM", false),
+        ("GlmMoeDsaForCausalLM", true),
         ("Phi3ForCausalLM", false),
         ("Phi4ForCausalLM", false),
         ("MistralForCausalLM", false),
@@ -1961,10 +2074,15 @@ pub fn get_arch_rope(
             ModelType::GLM4MoeLite,
             "[gMASK]<sop><|user|>{}<|assistant|>".to_string(),
         ),
+        "GlmMoeDsaForCausalLM" => (
+            ModelType::GLM5,
+            "[gMASK]<sop><|user|>{}<|assistant|>".to_string(),
+        ),
         "DeepseekV3ForCausalLM"
         | "DeepseekV32ForCausalLM"
         | "DeepseekForCausalLM"
         | "deepseek3"
+        | "deepseek2"
         | "deepseek" => (ModelType::DeepSeek, "<|User|>{}<|Assistant|>".to_string()),
         "Phi3ForCausalLM" | "Phi4ForCausalLM" | "phi3" | "phi4" => {
             (ModelType::Phi4, "<|user|>\n{}<|assistant|>".to_string())

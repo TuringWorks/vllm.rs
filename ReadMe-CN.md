@@ -134,9 +134,10 @@ xinfer --w /home/Qwen3.6-35B-A3B --d 0,1 --ui-server --mtp 2
 * ✅ Qwen3.5/3.6 Dense/MoE 系列（27B、35B、122B、397B、多模态）
 * ✅ Mistral v1、v2
 * ✅ Mistral-3-VL Reasoning（3B、8B、14B、多模态）
-* ✅ GLM4（0414 版本，**非 ChatGLM**）
+* ✅ GLM4（0414 版本）
 * ✅ GLM4 MoE（4.6/4.7）
 * ✅ GLM4.7 Flash
+* ✅ GLM 5.2（DeepSeek V3.2 DSA 架构）
 * ✅ DeepSeek V3/R1/V3.2
 * ✅ Phi3 / Phi4（Phi-3、Phi-4、Phi-4-mini 等）
 * ✅ Gemma3/**Gemma4**（多模态）
@@ -215,6 +216,9 @@ xinfer --m olka-fi/Qwen3.5-4B-MXFP4
 # GGUF 模型（4 位 KV 缓存）
 xinfer --m unsloth/Qwen3.5-27B-GGUF --f Qwen3.5-27B-Q4_K_M.gguf --kvcache-dtype turbo4
 
+# GGUF 多分片（自动检测 HF 子文件夹）
+xinfer --d 0,1,2,3 --m unsloth/Qwen3.5-122B-A10B-GGUF --f Q3_K_M --kvcache-dtype fp8
+
 # FP8 Metal
 xinfer --m Qwen/Qwen3.5-4B-FP8
 
@@ -229,6 +233,12 @@ xinfer --i --m unsloth/Qwen3.5-27B-GGUF --f Qwen3.5-27B-Q4_K_M.gguf
 
 # Hopper 上加速 GDN 预填充，精度略有损失
 SM90_LOWER_PRECISION_GDN_PREFILL=1 xinfer --m Qwen/Qwen3.5-35B-A3B-FP8
+
+# 多节点推理: GLM 5.2（DeepSeek V3.2 架构，FP8）
+# 主节点
+xinfer --d 0,1,2,3,4,5,6,7 --m zai-org/GLM-5.2-FP8 --num-nodes 2 --node-rank 0 --master-addr 192.168.xxx.xxx
+# 次节点
+xinfer --d 0,1,2,3,4,5,6,7 --m zai-org/GLM-5.2-FP8 --num-nodes 2 --node-rank 1 --master-addr 192.168.xxx.xxx
 ```
 
 <details>
@@ -261,7 +271,7 @@ xinfer --m unsloth/Qwen3.5-27B-GGUF --f Qwen3.5-27B-Q4_K_M.gguf
 xinfer --d 0,1 --m /path/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf
 
 # 本地 GGUF 文件夹
-xinfer --d 0,1,2,3 --m /path/to/model-GGUF/
+xinfer --d 0,1,2,3 --m /path/to/Qwen3.5-122B-A10B-GGUF/Q3_K_M
 ```
 
 </details>
@@ -541,7 +551,8 @@ SM90_LOWER_PRECISION_GDN_PREFILL=1 xinfer --m Qwen/Qwen3.5-35B-A3B-FP8 --ui-serv
 * [x] FP8 KV Cache（FlashInfer，SM80+）
 * [x] TurboQuant KV Cache（2-4 位压缩，WHT 旋转量化）
 * [x] FP8 模型（CUDA: MoE, Dense; Metal: Dense）
-* [ ] 支持更多模型类型（Kimi K2、GLM 5.1 等）
+* [x] **GLM 5.2（DeepSeek V3.2 + DSA）**
+* [ ] 支持更多模型类型（Kimi K2 等）
 * [x] CPU KV Cache 卸载
 * [x] PD（Prefill/Decode）分离（CUDA）
 * [x] PD（Prefill/Decode）分离（Metal）
