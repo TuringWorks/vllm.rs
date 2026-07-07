@@ -200,6 +200,21 @@ impl Scheduler {
         self.waiting.is_empty() && self.running.is_empty()
     }
 
+    fn active_sequence_limit(&self) -> usize {
+        fn active_sequence_limit_(
+            max_num_seqs: usize,
+            mamba_cache_capacity: Option<usize>,
+        ) -> usize {
+            if let Some(mamba_cap) = mamba_cache_capacity {
+                if mamba_cap > 0 {
+                    return mamba_cap;
+                }
+            }
+            std::cmp::max(max_num_seqs, MIN_NUM_SCHEDULED_REQS)
+        }
+        active_sequence_limit_(self.cfg.max_num_seqs, self.cfg.mamba_cache_capacity)
+    }
+
     /// Schedule sequences and return their indexes in `running` along with prefill flag
     #[allow(non_snake_case)]
     pub fn schedule(&mut self) -> Result<(Vec<usize>, bool)> {
@@ -242,15 +257,7 @@ impl Scheduler {
 
         // For hybrid mamba models, cap total concurrent sequences to the mamba
         // cache capacity so the runner never hits "no free slots" at forward time.
-        let max_seqs_limit = if let Some(mamba_cap) = self.cfg.mamba_cache_capacity {
-            if mamba_cap > 0 {
-                mamba_cap
-            } else {
-                std::cmp::max(self.cfg.max_num_seqs, MIN_NUM_SCHEDULED_REQS)
-            }
-        } else {
-            std::cmp::max(self.cfg.max_num_seqs, MIN_NUM_SCHEDULED_REQS)
-        };
+        let max_seqs_limit = self.active_sequence_limit();
 
         while let Some(mut seq) = self.waiting.pop_front() {
             // Try to transfer prefill requests to PD server when applicable
@@ -261,7 +268,7 @@ impl Scheduler {
             let effective_tokens = seq.prefill_chunk_tokens(chunk_size);
 
             if self.running.len() >= max_seqs_limit
-                || scheduled_ids.len() >= std::cmp::max(self.cfg.max_num_seqs, MIN_NUM_SCHEDULED_REQS)
+                || scheduled_ids.len() >= max_seqs_limit
                 || num_tokens + effective_tokens >= self.cfg.max_num_batched_tokens - 1
                 || (seq.block_table.is_empty() && !self.block_manager.can_allocate(&seq))
                 // interleaved scheduling: alternate prefill/decode for fairness
@@ -343,18 +350,7 @@ impl Scheduler {
         }
 
         let is_pd_server = self.is_pd_server();
-        let decode_max_seqs = if let Some(mamba_cap) = self.cfg.mamba_cache_capacity {
-            if mamba_cap > 0 {
-                std::cmp::min(
-                    mamba_cap,
-                    std::cmp::max(self.cfg.max_num_seqs, MIN_NUM_SCHEDULED_REQS),
-                )
-            } else {
-                std::cmp::max(self.cfg.max_num_seqs, MIN_NUM_SCHEDULED_REQS)
-            }
-        } else {
-            std::cmp::max(self.cfg.max_num_seqs, MIN_NUM_SCHEDULED_REQS)
-        };
+        let decode_max_seqs = self.active_sequence_limit();
         let mut pd_finished_ids: Vec<usize> = Vec::new();
         for (idx, seq) in self.running.iter_mut().enumerate() {
             if decode_ids.len() >= decode_max_seqs {
@@ -1394,5 +1390,25 @@ impl Scheduler {
         }
 
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{active_sequence_limit, MIN_NUM_SCHEDULED_REQS};
+
+    #[test]
+    fn active_sequence_limit_uses_mamba_capacity_for_hybrid_models() {
+        assert_eq!(active_sequence_limit(5, Some(9)), 9);
+    }
+
+    #[test]
+    fn active_sequence_limit_preserves_minimum_for_non_hybrid_models() {
+        assert_eq!(active_sequence_limit(1, None), MIN_NUM_SCHEDULED_REQS);
+    }
+
+    #[test]
+    fn active_sequence_limit_preserves_zero_mamba_as_disabled() {
+        assert_eq!(active_sequence_limit(7, Some(0)), 7);
     }
 }
