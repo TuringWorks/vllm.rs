@@ -86,8 +86,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Ubuntu 20.04 ships git 2.25.1, whose sparse-checkout chokes during
+      # cudaforge's `git clone --filter/--sparse` of the flashinfer repo:
+      #   fatal: cannot change to '<remote-url>': No such file or directory
+      #   error: failed to initialize sparse-checkout
+      # Only sm80/sm89 hit this (they enable the `flashinfer` feature, which
+      # triggers cudaforge to clone flashinfer; sm70/sm75 use `cuda,nccl` only
+      # and never invoke the clone). Pull a modern git from the git-core PPA.
       - name: Install system dependencies
         run: |
+          apt-get update
+          apt-get install -y --no-install-recommends --allow-change-held-packages \
+            software-properties-common ca-certificates curl gnupg
+          add-apt-repository -y ppa:git-core/ppa
           apt-get update
           apt-get install -y --no-install-recommends --allow-change-held-packages \
             libnccl-dev libnccl2 \
@@ -96,6 +107,7 @@ jobs:
             clang libclang-dev \
             python3-pip patchelf dpkg-dev
           rm -rf /var/lib/apt/lists/*
+          git --version
 
       - name: Install Rust
         run: |
