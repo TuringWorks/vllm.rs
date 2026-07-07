@@ -5,9 +5,9 @@ use crate::core::GenerationOutput;
 use crate::server::run_server;
 use crate::transfer::{PdConfig, PdMethod, PdRole};
 use crate::utils::chat_template::Message;
+use crate::utils::config::ReasoningEffort;
 use crate::utils::config::{EngineConfig, GenerationConfig, SamplingParams};
 use crate::utils::get_dtype;
-use crate::utils::reasoning::ReasoningEffort;
 use llguidance::api::TopLevelGrammar;
 use parking_lot::RwLock;
 use pyo3::exceptions::PyStopIteration;
@@ -307,7 +307,8 @@ impl EngineConfig {
         tool_prompt_template=None,
         pd_server_prefix_cache_ratio=None, pd_client_prefix_cache_ratio=None, yarn_scaling_factor=None,
         disable_reasoning=false, disable_cuda_graph=false, prefill_chunk_size=Some(8192),
-        num_nodes=1, node_rank=0, master_addr=None, master_port=29500,))]
+        num_nodes=1, node_rank=0, master_addr=None, master_port=29500,
+        enable_tool_grammar=false,))]
     pub fn new(
         model_id: Option<String>,
         weight_path: Option<String>,
@@ -346,6 +347,7 @@ impl EngineConfig {
         node_rank: usize,
         master_addr: Option<String>,
         master_port: u16,
+        enable_tool_grammar: bool,
     ) -> Self {
         let mut device_ids = device_ids.unwrap_or_default();
         if device_ids.is_empty() {
@@ -405,6 +407,7 @@ impl EngineConfig {
             master_addr,
             master_port,
             mtp_num_speculative_tokens: None,
+            enable_tool_grammar,
         }
     }
 }
@@ -495,6 +498,7 @@ impl SamplingParams {
     fn reasoning_effort(&self) -> Option<String> {
         self.reasoning_effort.as_ref().map(|effort| match effort {
             ReasoningEffort::None => "none".to_string(),
+            ReasoningEffort::ModelDefault => "model_default".to_string(),
             ReasoningEffort::Low => "low".to_string(),
             ReasoningEffort::Medium => "medium".to_string(),
             ReasoningEffort::High => "high".to_string(),

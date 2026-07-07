@@ -168,6 +168,7 @@ impl EngineBuilder {
             0,     // node_rank
             None,  // master_addr
             29500, // master_port
+            false,
         );
 
         if let Some(kv_dtype) = self.kvcache_dtype {

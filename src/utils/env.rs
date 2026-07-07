@@ -52,3 +52,43 @@ pub fn mamba_snapshot_block_stride_blocks(default: usize) -> usize {
         }
     }
 }
+
+pub const DEFAULT_REASONING_MAX_TOKENS_ENV: &str = "XINFER_DEFAULT_REASONING_MAX_TOKENS";
+pub const DEFAULT_REASONING_MAX_TOKENS_VALUE: usize = 512;
+
+static DEFAULT_REASONING_MAX_TOKENS: OnceLock<usize> = OnceLock::new();
+
+pub fn default_reasoning_max_tokens() -> usize {
+    *DEFAULT_REASONING_MAX_TOKENS.get_or_init(|| {
+        env::var(DEFAULT_REASONING_MAX_TOKENS_ENV)
+            .map(|raw| {
+                raw.trim()
+                    .parse::<usize>()
+                    .map(|n| {
+                        if n == 0 {
+                            DEFAULT_REASONING_MAX_TOKENS_VALUE
+                        } else {
+                            n
+                        }
+                    })
+                    .unwrap_or(DEFAULT_REASONING_MAX_TOKENS_VALUE)
+            })
+            .unwrap_or(DEFAULT_REASONING_MAX_TOKENS_VALUE)
+    })
+}
+
+/// Environment variable to disable soft masking for gradient smoothing.
+/// When NOT set: soft masking is ENABLED (default behavior).
+/// When set to "1", "true", or "yes": soft masking is DISABLED (hard -inf masking).
+/// When set to "0", "false", or "no": soft masking is ENABLED.
+pub const SOFT_MASK_DISABLED_ENV: &str = "XINFER_SOFT_MASK_DISABLED";
+
+static SOFT_MASK_DISABLED: OnceLock<bool> = OnceLock::new();
+
+pub fn soft_mask_disabled() -> bool {
+    *SOFT_MASK_DISABLED.get_or_init(|| {
+        env::var(SOFT_MASK_DISABLED_ENV)
+            .map(|v| !matches!(v.trim().to_lowercase().as_str(), "0" | "false" | "no"))
+            .unwrap_or(false)
+    })
+}

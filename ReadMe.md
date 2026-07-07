@@ -449,9 +449,14 @@ xinfer --m unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF \
 
 ---
 
-## 🔌 Structured Outputs
+## 🔌 Structured Outputs & Guided Decoding
 
-Constraint-based generation via llguidance — Lark grammars, regex, JSON Schema.
+Constraint-based generation via llguidance — JSON Schema, regex, Lark grammars, choice lists.
+
+```bash
+# Enable structured outputs and tool grammar
+xinfer --m Qwen/Qwen3.6-27B-FP8 --ui-server --enable-tool-grammar
+```
 
 [Structured outputs documentation →](docs/guided_decoding.md)
 

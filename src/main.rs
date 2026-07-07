@@ -246,6 +246,7 @@ async fn main() -> Result<()> {
         args.node_rank,
         args.master_addr.clone(),
         args.master_port,
+        args.enable_tool_grammar,
     )
     .with_mtp(args.mtp);
 

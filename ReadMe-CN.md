@@ -443,9 +443,14 @@ xinfer --m unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF \
 
 ---
 
-## 🔌 结构化输出
+## 🔌 结构化输出与引导解码
 
-通过 llguidance 实现约束生成 — Lark 语法、正则表达式、JSON Schema。
+通过 llguidance 实现约束生成 — JSON Schema、正则表达式、Lark 语法、选项列表。
+
+```bash
+# 启用结构化输出和工具语法
+xinfer --m Qwen/Qwen3.6-27B-FP8 --ui-server --enable-tool-grammar
+```
 
 [结构化输出文档 →](docs/guided_decoding.md)
 

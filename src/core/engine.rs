@@ -21,6 +21,7 @@ use crate::transfer::Transfer;
 use crate::utils::chat_template::Message;
 use crate::utils::config::{EngineConfig, EosTokenId, ModelType, SamplingParams};
 use crate::utils::guidance::{build_llg_factory, extract_guidance_tokens, GuidanceTokens};
+use crate::utils::guidance_grammar::{get_reasoning_token_strings, is_reasoning_grammar};
 use crate::utils::heartbeat::heartbeat_worker;
 use crate::utils::image::{get_image_config, ImageData, ImageProcessConfig};
 use crate::utils::kvcache_allocator::KVCacheAllocator;
@@ -143,6 +144,13 @@ impl LLMEngine {
                 };
             }
         }
+        if config.bos_token_id.is_none() {
+            if let Some(bos) = &config_tokenizer.bos_token {
+                if let Some(token) = tokenizer.get_vocab(true).get(bos).copied() {
+                    config.bos_token_id = Some(token as usize);
+                };
+            }
+        }
         let guidance_tokens = extract_guidance_tokens(
             &tokenizer,
             config
@@ -150,6 +158,10 @@ impl LLMEngine {
                 .as_ref()
                 .map(EosTokenId::to_vec)
                 .unwrap_or_default(),
+            config
+                .bos_token_id
+                .map_or(Vec::new(), |bos| vec![bos as u32]),
+            &config_tokenizer,
         );
         assert!(
             config.architectures.is_some() && config.architectures.as_ref().unwrap().len() == 1,
@@ -613,12 +625,14 @@ impl LLMEngine {
             }
         }
         let mut params = params.clone();
-        params.max_tokens = Some(
-            params
-                .max_tokens
-                .unwrap_or(self.econfig.max_tokens.unwrap_or(16384)),
-        );
-        let mut max_tokens = params.max_tokens.unwrap();
+
+        let mut max_tokens = if let Some(max_t) = params.max_tokens {
+            max_t
+        } else {
+            let default_max = self.econfig.max_tokens.unwrap_or(16384);
+            params.max_tokens = Some(default_max);
+            default_max
+        };
         let requested_max_tokens = max_tokens;
 
         let max_model_len = self.econfig.max_model_len.unwrap_or(max_tokens);
@@ -1621,8 +1635,21 @@ impl LLMEngine {
     ) -> (String, i32) {
         // let mut collected_images = Vec::new();
         let mut prompt_template = self.template.clone();
-        prompt_template
-            .set_enable_thinking(params.thinking.unwrap_or(!self.econfig.disable_reasoning));
+        if let Some(grammar) = &params.grammar {
+            if is_reasoning_grammar(&grammar) {
+                prompt_template.set_enable_thinking(true);
+            } else {
+                // Grammar without reasoning rules: thinking is handled at the mask
+                // level (GuidanceState defers grammar until after </think>), so use
+                // the default thinking setting — same as the no-grammar path.
+                prompt_template.set_enable_thinking(
+                    params.thinking.unwrap_or(!self.econfig.disable_reasoning),
+                );
+            }
+        } else {
+            prompt_template
+                .set_enable_thinking(params.thinking.unwrap_or(!self.econfig.disable_reasoning));
+        };
         prompt_template.set_messages(messages);
         let image_idx: i32 = 0;
         let prompt_processed = prompt_template
@@ -1653,6 +1680,57 @@ impl LLMEngine {
                 "Prompt after applying Chat Template: {}",
                 prompt.replace("\n", "")
             );
+        }
+        // Generation alignment and open/close parity enforcement
+        if let Some(grammar) = &params.grammar {
+            if self.guidance_tokens.add_bos_token {
+                // BOS-based trimming: trim the last BOS token from the prompt tail.
+                // Only trim if the prompt actually ends with the BOS string to avoid
+                // splitting in the middle of a multi-turn conversation.
+                if let Ok(bos_string) = self
+                    .tokenizer
+                    .decode(&self.guidance_tokens.bos_token_ids, false)
+                {
+                    if prompt.trim_end().ends_with(&bos_string) {
+                        if let Some((prefix, _)) = prompt.rsplit_once(&bos_string) {
+                            return (prefix.to_string(), image_idx);
+                        }
+                    }
+                }
+                for bos_token in self.guidance_tokens.bos_token_ids.iter() {
+                    if let Ok(bos_string) = self.tokenizer.decode(&[*bos_token], false) {
+                        if prompt.trim_end().ends_with(&bos_string) {
+                            if let Some((prefix, _)) = prompt.rsplit_once(&bos_string) {
+                                return (prefix.to_string(), image_idx);
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Reasoning tag-based trimming: check for reasoning start/end tokens
+                if let Some((start_str, end_str)) =
+                    get_reasoning_token_strings(&self.guidance_tokens, &self.tokenizer)
+                {
+                    if is_reasoning_grammar(&grammar) {
+                        // Control entire reasoning block via guidance
+                        if prompt.trim().ends_with(&start_str) || prompt.trim().ends_with(&end_str)
+                        {
+                            if let Some((prompt, _trimmed)) = prompt.rsplit_once(&start_str) {
+                                return (prompt.to_string(), image_idx);
+                            }
+                        }
+                    } else if params.guidance_reasoning_end_ids.is_empty() {
+                        // Only trim <think> when NOT using two-phase reasoning.
+                        // With two-phase reasoning, the model needs the <think> prefix
+                        // to generate reasoning freely before grammar constraints kick in.
+                        if prompt.trim().ends_with(&start_str) {
+                            if let Some((prompt, _trimmed)) = prompt.rsplit_once(&start_str) {
+                                return (prompt.to_string(), image_idx);
+                            }
+                        }
+                    }
+                }
+            }
         }
         (prompt, image_idx)
     }
@@ -2244,6 +2322,11 @@ impl LLMEngine {
     pub fn get_chat_template(&self) -> ChatTemplate {
         self.template.clone()
     }
+
+    /// Get a clone of the default chat template for grammar generation
+    pub fn get_default_chat_template(&self) -> String {
+        self.default_chat_template.clone()
+    }
 }
 
 #[cfg(test)]
@@ -2254,9 +2337,13 @@ mod tests {
     #[test]
     fn trim_prompt_replay_prefix_accepts_single_reasoning_token() {
         let guidance_tokens = GuidanceTokens {
+            bos_token_ids: Vec::new(),
             eos_token_ids: Vec::new(),
             reasoning_start_ids: vec![42, 99],
             reasoning_end_ids: vec![100],
+            tool_call_start_ids: Vec::new(),
+            tool_call_end_ids: Vec::new(),
+            add_bos_token: false,
         };
 
         assert_eq!(
@@ -2268,9 +2355,13 @@ mod tests {
     #[test]
     fn trim_prompt_replay_prefix_accepts_multi_token_suffix_when_first_token_is_reasoning() {
         let guidance_tokens = GuidanceTokens {
+            bos_token_ids: Vec::new(),
             eos_token_ids: Vec::new(),
             reasoning_start_ids: vec![42],
             reasoning_end_ids: vec![100],
+            tool_call_start_ids: Vec::new(),
+            tool_call_end_ids: Vec::new(),
+            add_bos_token: false,
         };
 
         assert_eq!(
@@ -2282,9 +2373,13 @@ mod tests {
     #[test]
     fn trim_prompt_replay_prefix_trims_leading_non_reasoning_tokens() {
         let guidance_tokens = GuidanceTokens {
+            bos_token_ids: Vec::new(),
             eos_token_ids: Vec::new(),
             reasoning_start_ids: vec![42],
             reasoning_end_ids: vec![100],
+            tool_call_start_ids: Vec::new(),
+            tool_call_end_ids: Vec::new(),
+            add_bos_token: false,
         };
 
         assert_eq!(
@@ -2296,9 +2391,13 @@ mod tests {
     #[test]
     fn trim_prompt_replay_prefix_rejects_suffix_without_reasoning_token() {
         let guidance_tokens = GuidanceTokens {
+            bos_token_ids: Vec::new(),
             eos_token_ids: Vec::new(),
             reasoning_start_ids: vec![42],
             reasoning_end_ids: vec![100],
+            tool_call_start_ids: Vec::new(),
+            tool_call_end_ids: Vec::new(),
+            add_bos_token: false,
         };
 
         assert_eq!(
@@ -2310,9 +2409,13 @@ mod tests {
     #[test]
     fn trim_prompt_replay_prefix_rejects_empty_suffix() {
         let guidance_tokens = GuidanceTokens {
+            bos_token_ids: Vec::new(),
             eos_token_ids: Vec::new(),
             reasoning_start_ids: vec![42],
             reasoning_end_ids: vec![100],
+            tool_call_start_ids: Vec::new(),
+            tool_call_end_ids: Vec::new(),
+            add_bos_token: false,
         };
 
         assert_eq!(

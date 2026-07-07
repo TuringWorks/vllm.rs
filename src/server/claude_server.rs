@@ -11,6 +11,7 @@ use crate::tools::helpers::{
 };
 use crate::tools::{Tool, ToolCall, ToolChoice};
 use crate::utils::config::SamplingParams;
+use crate::utils::guidance_grammar::build_guided_decoding_grammar;
 use axum::{
     extract::{Json, State},
     http::StatusCode,
@@ -2134,11 +2135,58 @@ pub async fn messages(
     let parser_model_id =
         super::resolve_engine_model_id(&engine_config).unwrap_or_else(|| model_id.clone());
     let enforce_parser = engine_config.enforce_parser.clone();
+    let tool_parser_name = if let Some(ref enforced) = enforce_parser {
+        enforced.clone()
+    } else {
+        StreamToolParser::parser_name_for_model(&model_type, &parser_model_id).to_string()
+    };
 
     let img_cfg = {
         let e = data.engine.read();
         e.img_cfg.clone()
     };
+
+    if engine_config.enable_tool_grammar && !resolved_tools.is_empty() {
+        let engine = data.engine.read();
+        let model_type = engine.model_type.clone();
+        let model_id = model_id.clone();
+        let chat_template = Some(engine.get_chat_template());
+        let guidance_tokens = engine.guidance_tokens.clone();
+
+        params.grammar = build_guided_decoding_grammar(
+            &guidance_tokens,
+            &tool_config,
+            &resolved_tools,
+            &tool_parser_name,
+            None,
+            tool_choice_required,
+            forced_tool_name.clone(),
+            max_tokens,
+            None,
+            engine_config.enable_tool_grammar,
+            &engine.tokenizer,
+            &model_type,
+            &model_id,
+            chat_template,
+            engine_config.disable_reasoning,
+        );
+
+        if params.grammar.is_some() && !guidance_tokens.reasoning_end_ids.is_empty() {
+            params.guidance_reasoning_end_ids = guidance_tokens.reasoning_end_ids.clone();
+        }
+
+        if let Some(ref grammar) = params.grammar {
+            if tracing::enabled!(tracing::Level::DEBUG) {
+                let lark = crate::utils::guidance_grammar::get_lark_from_top_level_grammar(grammar);
+                tracing::debug!(
+                    "[llg] Final Claude grammar: {} bytes, {} lines",
+                    lark.len(),
+                    lark.lines().count()
+                );
+                tracing::trace!("[llg] Final Claude grammar:\n{}", lark);
+            }
+        }
+    }
 
     let (messages, image_data) = match build_messages_and_images(&chat_messages, img_cfg.as_ref()) {
         Ok(output) => output,
