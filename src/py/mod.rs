@@ -452,6 +452,7 @@ impl SamplingParams {
             grammar_json,
             grammar,
             reasoning_effort: None,
+            guidance_reasoning_end_ids: Vec::new(),
         }
     }
 
@@ -473,6 +474,7 @@ impl SamplingParams {
             grammar_json: None,
             grammar: None,
             reasoning_effort: None,
+            guidance_reasoning_end_ids: Vec::new(),
         }
     }
 
