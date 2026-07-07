@@ -43,6 +43,7 @@ jobs:
   # ---------------------------------------------------------------------------
   # CUDA x64 container builds:
   # - SM70/75/80/89 use CUDA 12.6 for broad driver compatibility.
+  # - Build in Ubuntu 20.04 so these artifacts run on Ubuntu 20.04-era hosts.
   # - GitHub-hosted runners need low build parallelism for flashinfer/cutlass.
   # ---------------------------------------------------------------------------
   cuda-x64:
@@ -75,7 +76,7 @@ jobs:
             features: "cuda,nccl,flashinfer,cutlass"
             python_features: "cuda,nccl,flashinfer,cutlass,python"
     container:
-      image: docker.io/nvidia/cuda:${{ matrix.cuda_version }}-cudnn-devel-ubuntu22.04
+      image: docker.io/nvidia/cuda:${{ matrix.cuda_version }}-cudnn-devel-ubuntu20.04
     env:
       CUDA_COMPUTE_CAP: ${{ matrix.sm }}
       DEBIAN_FRONTEND: noninteractive
