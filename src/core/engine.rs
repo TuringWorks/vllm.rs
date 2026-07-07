@@ -1907,7 +1907,10 @@ impl LLMEngine {
     pub fn free_resources(&mut self) {
         crate::log_error!("***Release all resources for future usage!");
         self.scheduler.clear_finished();
-        self.scheduler.release_waitings();
+        let released_ids = self.scheduler.release_waitings();
+        for seq_id in released_ids {
+            let _ = self.notify_runner_finished(seq_id);
+        }
         self.seq_prefilled_reasoning_end.clear();
         self.seq_prompt_replays.clear();
     }

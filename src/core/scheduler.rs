@@ -686,16 +686,19 @@ impl Scheduler {
             .retain(|seq| seq.status != SequenceStatus::Finished);
     }
 
-    pub fn release_waitings(&mut self) {
+    pub fn release_waitings(&mut self) -> Vec<usize> {
         // Release all waiting sequences since there are no more resources (kv cache)
+        let mut released_ids = Vec::with_capacity(self.waiting.len() + self.cached.len());
         for i in 0..self.waiting.len() {
             let seq = &mut self.waiting[i];
+            released_ids.push(seq.id);
             seq.status = SequenceStatus::Finished;
             self.block_manager.deallocate(seq);
         }
         self.waiting.clear();
         for i in 0..self.cached.len() {
             let seq = &mut self.cached[i];
+            released_ids.push(seq.id);
             seq.status = SequenceStatus::Finished;
             self.block_manager.deallocate(seq);
             // free gpu blocks and also free any CPU swap space
@@ -703,6 +706,7 @@ impl Scheduler {
         }
         self.cached.clear();
         self.block_manager.clear_prefix_cache();
+        released_ids
     }
 
     pub fn release_cache(&mut self, seq_id: usize) {
