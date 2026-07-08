@@ -329,7 +329,7 @@ xinfer --m mistralai/Ministral-3-3B --ui-server
 ```bash
 # Prerequisites: Rust compiler, CUDA Toolkit (optional) or Metal Xcode command line tool
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-sudo apt-get install -y git build-essential libssl-dev pkg-config
+sudo apt-get install -y git build-essential
 
 export XINFER_REPO="https://github.com/guoqingbao/xinfer"
 # MacOS/Metal: replace features to `metal`

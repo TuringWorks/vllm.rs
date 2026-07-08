@@ -12,9 +12,7 @@ RUN <<HEREDOC
         libnccl2=$(apt-cache madison libnccl2 | awk -v cuda="$(echo "$CUDA_VERSION" | cut -d'.' -f1,2)" '$0 ~ cuda {print $3; exit}') \
         libomp-dev \
         ca-certificates \
-        libssl-dev \
-        curl \
-        pkg-config
+        curl
 
     rm -rf /var/lib/apt/lists/* && apt clean
 HEREDOC

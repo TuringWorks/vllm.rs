@@ -68,8 +68,6 @@ bundle_dependency() {
 }
 
 bundle_dependency "libcudart.so"
-bundle_dependency "libssl.so"
-bundle_dependency "libcrypto.so"
 
 patchelf --set-rpath '$ORIGIN/lib:/usr/local/lib/xinfer' "$BIN"
 ls -la "$LIB_DIR"/

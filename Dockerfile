@@ -16,8 +16,8 @@ RUN set -eux; \
     libnccl-dev=$(apt-cache madison libnccl-dev | awk -v cuda="$(echo "$CUDA_VERSION" | cut -d'.' -f1,2)" '$0 ~ cuda {print $3; exit}') \
     libnccl2=$(apt-cache madison libnccl2 | awk -v cuda="$(echo "$CUDA_VERSION" | cut -d'.' -f1,2)" '$0 ~ cuda {print $3; exit}') \
     curl git ca-certificates \
-    libssl-dev pkg-config \
     clang libclang-dev \
+    perl make \
     python3-pip && \
   rm -rf /var/lib/apt/lists/*
 

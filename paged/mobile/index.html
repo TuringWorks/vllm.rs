@@ -411,11 +411,11 @@ footer{padding:56px 0 28px;border-top:1px solid var(--c-border);position:relativ
       </div>
     </div>
     <div id="tb" class="tpanel rv">
-      <div class="cb" data-cp="curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh&#10;sudo apt-get install -y git build-essential libssl-dev pkg-config&#10;export XINFER_REPO=&quot;https://github.com/guoqingbao/xinfer&quot;&#10;cargo install --git $XINFER_REPO xinfer --features cuda,nccl,flashinfer,cutlass">
+      <div class="cb" data-cp="curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh&#10;sudo apt-get install -y git build-essential&#10;export XINFER_REPO=&quot;https://github.com/guoqingbao/xinfer&quot;&#10;cargo install --git $XINFER_REPO xinfer --features cuda,nccl,flashinfer,cutlass">
         <div class="cb-h"><div class="cb-dots"><i></i><i></i><i></i></div><span class="cb-t">bash</span><button class="cpb" data-i="cp">Copy</button></div>
         <div class="cb-b"><pre><span class="t-x" data-i="i.pre"># Prerequisites: Rust, CUDA Toolkit (or Metal Xcode CLI)</span>
 <span class="t-c">curl</span> <span class="t-f">--proto</span> <span class="t-s">'=https'</span> <span class="t-f">--tlsv1.2</span> <span class="t-f">-sSf</span> <span class="t-s">https://sh.rustup.rs</span> | <span class="t-c">sh</span>
-<span class="t-c">sudo apt-get install</span> <span class="t-f">-y</span> <span class="t-s">git build-essential libssl-dev pkg-config</span>
+<span class="t-c">sudo apt-get install</span> <span class="t-f">-y</span> <span class="t-s">git build-essential</span>
 
 <span class="t-c">export</span> XINFER_REPO=<span class="t-s">"https://github.com/guoqingbao/xinfer"</span>
 <span class="t-x"># macOS/Metal: replace features with `metal`</span>

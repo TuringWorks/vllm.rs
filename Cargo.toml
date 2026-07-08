@@ -90,6 +90,9 @@ metal = ["candle-core/metal", "candle-nn/metal", "attention-rs/metal", "attentio
 python = ["pyo3"]
 nvtx = ["dep:nvtx"]
 
+[target.'cfg(target_os = "linux")'.dependencies]
+openssl-sys = { version = "0.9", features = ["vendored"] }
+
 [package.metadata.deb]
 name = "xinfer"
 maintainer = "xInfer Team"
