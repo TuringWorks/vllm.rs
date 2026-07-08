@@ -1,6 +1,12 @@
 name: release
 
 on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing release tag to rebuild, for example v0.13.7"
+        required: true
+        default: "v0.13.7"
   push:
     tags:
       - "v*.*.*"
@@ -22,6 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
       - name: Validate package versions
@@ -34,11 +41,13 @@ jobs:
             exit 1
           fi
           expected_tag="v${cargo_version}"
-          if [ "${{ github.ref_name }}" != "$expected_tag" ]; then
-            echo "Tag ${{ github.ref_name }} must match package version $expected_tag" >&2
+          release_tag="${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}"
+          if [ "$release_tag" != "$expected_tag" ]; then
+            echo "Tag $release_tag must match package version $expected_tag" >&2
             exit 1
           fi
           echo "version=${cargo_version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${release_tag}" >> "$GITHUB_OUTPUT"
 
   # ---------------------------------------------------------------------------
   # CUDA x64 container builds:
@@ -130,21 +139,8 @@ jobs:
           . "$HOME/.cargo/env"
           ./build.sh --release --features "${{ matrix.python_features }}"
 
-      - name: Bundle CUDA runtime with binary
-        run: |
-          CUDA_LIB="$(find /usr/local/cuda -follow -name 'libcudart.so.*.*' -not -name '*.a' 2>/dev/null | head -1)"
-          if [ -z "$CUDA_LIB" ]; then CUDA_LIB="$(ldconfig -p | grep 'libcudart.so\.' | awk '{print $NF}' | head -1)"; fi
-          mkdir -p target/release/lib
-          if [ -n "$CUDA_LIB" ]; then
-            cp "$CUDA_LIB" target/release/lib/
-            CUDA_SONAME="$(objdump -p "$CUDA_LIB" 2>/dev/null | awk '/SONAME/{print $2}')"
-            if [ -n "$CUDA_SONAME" ]; then
-              ln -sf "$(basename "$CUDA_LIB")" "target/release/lib/$CUDA_SONAME"
-              ln -sf "$CUDA_SONAME" target/release/lib/libcudart.so
-            fi
-          fi
-          patchelf --set-rpath '$ORIGIN/lib:/usr/local/lib/xinfer' target/release/xinfer
-          ls -la target/release/lib/
+      - name: Bundle runtime libraries with binary
+        run: bash .github/scripts/bundle-binary-libs.sh target/release/xinfer target/release/lib
 
       - name: Package deb
         run: |
@@ -217,21 +213,8 @@ jobs:
       - name: Build Python wheel
         run: ./build.sh --release --features "${{ matrix.python_features }}"
 
-      - name: Bundle CUDA runtime with binary
-        run: |
-          CUDA_LIB="$(find /usr/local/cuda -follow -name 'libcudart.so.*.*' -not -name '*.a' 2>/dev/null | head -1)"
-          if [ -z "$CUDA_LIB" ]; then CUDA_LIB="$(ldconfig -p | grep 'libcudart.so\.' | awk '{print $NF}' | head -1)"; fi
-          mkdir -p target/release/lib
-          if [ -n "$CUDA_LIB" ]; then
-            cp "$CUDA_LIB" target/release/lib/
-            CUDA_SONAME="$(objdump -p "$CUDA_LIB" 2>/dev/null | awk '/SONAME/{print $2}')"
-            if [ -n "$CUDA_SONAME" ]; then
-              ln -sf "$(basename "$CUDA_LIB")" "target/release/lib/$CUDA_SONAME"
-              ln -sf "$CUDA_SONAME" target/release/lib/libcudart.so
-            fi
-          fi
-          patchelf --set-rpath '$ORIGIN/lib:/usr/local/lib/xinfer' target/release/xinfer
-          ls -la target/release/lib/
+      - name: Bundle runtime libraries with binary
+        run: bash .github/scripts/bundle-binary-libs.sh target/release/xinfer target/release/lib
 
       - name: Package deb
         run: cargo deb --no-build --output "dist/xinfer-linux-x64-${{ matrix.sm_name }}.deb"
@@ -313,21 +296,8 @@ jobs:
           . "$HOME/.cargo/env"
           ./build.sh --release --features "cuda,nccl,flashinfer,cutlass,python"
 
-      - name: Bundle CUDA runtime with binary
-        run: |
-          CUDA_LIB="$(find /usr/local/cuda -follow -name 'libcudart.so.*.*' -not -name '*.a' 2>/dev/null | head -1)"
-          if [ -z "$CUDA_LIB" ]; then CUDA_LIB="$(ldconfig -p | grep 'libcudart.so\.' | awk '{print $NF}' | head -1)"; fi
-          mkdir -p target/release/lib
-          if [ -n "$CUDA_LIB" ]; then
-            cp "$CUDA_LIB" target/release/lib/
-            CUDA_SONAME="$(objdump -p "$CUDA_LIB" 2>/dev/null | awk '/SONAME/{print $2}')"
-            if [ -n "$CUDA_SONAME" ]; then
-              ln -sf "$(basename "$CUDA_LIB")" "target/release/lib/$CUDA_SONAME"
-              ln -sf "$CUDA_SONAME" target/release/lib/libcudart.so
-            fi
-          fi
-          patchelf --set-rpath '$ORIGIN/lib:/usr/local/lib/xinfer' target/release/xinfer
-          ls -la target/release/lib/
+      - name: Bundle runtime libraries with binary
+        run: bash .github/scripts/bundle-binary-libs.sh target/release/xinfer target/release/lib
 
       - name: Package deb
         run: |
@@ -440,9 +410,10 @@ jobs:
       - name: Upload artifacts to release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ needs.validate.outputs.tag }}
           name: xInfer v${{ needs.validate.outputs.version }}
           generate_release_notes: true
+          overwrite_files: true
           files: |
             dist/*.tar.gz
             dist/*.deb
@@ -489,7 +460,7 @@ jobs:
         env:
           VERSION: ${{ needs.validate.outputs.version }}
           REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.validate.outputs.tag }}
         run: |
           RELEASE_BASE="https://github.com/${REPO}/releases/download/${TAG}"
 
@@ -825,18 +796,33 @@ jobs:
     env:
       NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
-      - name: Skip when NPM_TOKEN is not configured
-        if: env.NODE_AUTH_TOKEN == ''
-        run: echo "NPM_TOKEN is not configured; skipping npm publish."
       - uses: actions/checkout@v4
-        if: env.NODE_AUTH_TOKEN != ''
       - uses: actions/setup-node@v4
-        if: env.NODE_AUTH_TOKEN != ''
         with:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
+      - name: Check npm package version
+        id: npm_version
+        run: |
+          VERSION="${{ needs.validate.outputs.version }}"
+          PACKAGE_NAME="$(node -p "require('./npm/package.json').name")"
+          LATEST_VERSION="$(npm view "$PACKAGE_NAME" version 2>/dev/null || true)"
+          if npm view "${PACKAGE_NAME}@${VERSION}" version >/dev/null 2>&1; then
+            echo "${PACKAGE_NAME}@${VERSION} already exists on npm; skipping publish."
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "${PACKAGE_NAME}@${VERSION} does not exist on npm; publishing is allowed."
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "latest=${LATEST_VERSION:-unknown}" >> "$GITHUB_OUTPUT"
+      - name: Skip when NPM_TOKEN is not configured
+        if: env.NODE_AUTH_TOKEN == ''
+        run: echo "NPM_TOKEN is not configured; skipping npm publish."
+      - name: Skip when npm version already exists
+        if: env.NODE_AUTH_TOKEN != '' && steps.npm_version.outputs.exists == 'true'
+        run: echo "npm latest is ${{ steps.npm_version.outputs.latest }}; version ${{ needs.validate.outputs.version }} already exists."
       - name: Sync npm package version with release tag
-        if: env.NODE_AUTH_TOKEN != ''
+        if: env.NODE_AUTH_TOKEN != '' && steps.npm_version.outputs.exists != 'true'
         run: |
           VERSION="${{ needs.validate.outputs.version }}"
           cd npm
@@ -847,5 +833,5 @@ jobs:
             require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
           "
       - name: Publish npm package
-        if: env.NODE_AUTH_TOKEN != ''
+        if: env.NODE_AUTH_TOKEN != '' && steps.npm_version.outputs.exists != 'true'
         run: npm publish ./npm --access public --provenance
