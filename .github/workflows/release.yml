@@ -384,11 +384,7 @@ jobs:
       - name: Collect wheel
         run: |
           mkdir -p dist/wheels
-          for whl in target/wheels/*.whl; do
-            base="$(basename "$whl")"
-            tagged="$(echo "$base" | sed 's/-cp/-metal-cp/')"
-            cp "$whl" "dist/wheels/$tagged"
-          done
+          cp target/wheels/*.whl dist/wheels/
           ls -la dist/wheels/
 
       - uses: actions/upload-artifact@v4
@@ -481,8 +477,8 @@ jobs:
           RELEASE_BASE="https://github.com/${REPO}/releases/download/${TAG}"
 
           generate_index() {
-            local dir="$1" orig_name="$2" std_name="$3" sha="$4"
-            local href="${RELEASE_BASE}/${orig_name}"
+            local dir="$1" release_name="$2" std_name="$3" sha="$4"
+            local href="${RELEASE_BASE}/${release_name}"
             if [ -n "$sha" ]; then href="${href}#sha256=${sha}"; fi
             mkdir -p "site/${dir}/xinfer"
             {
@@ -508,9 +504,10 @@ jobs:
                 mkdir -p "site/xinfer"
                 cp "site/sm${tag}/xinfer/index.html" "site/xinfer/index.html"
               fi
-            elif echo "$orig_name" | grep -q '\-metal\-cp'; then
+            elif echo "$orig_name" | grep -qE '\-(metal\-cp|macosx_)'; then
               std_name="$(echo "$orig_name" | sed 's/-metal-cp/-cp/')"
-              generate_index "metal" "$orig_name" "$std_name" "$sha"
+              # pip parses wheel tags from the URL filename; use PEP 427 name on release
+              generate_index "metal" "$std_name" "$std_name" "$sha"
             fi
           done
 
