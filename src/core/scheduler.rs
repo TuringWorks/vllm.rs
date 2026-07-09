@@ -921,10 +921,12 @@ impl Scheduler {
                     break;
                 }
 
-                let mut seq = self.cached.remove(i);
-                seq.status = SequenceStatus::Finished;
-                crate::log_error!("No KvCache left for swap in Seq {}!", seq.id);
-                self.running.push(seq);
+                let seq_id = self.cached[i].id;
+                crate::log_error!(
+                    "No KvCache left for swap in Seq {} — cancelling request.",
+                    seq_id
+                );
+                self.cancel(seq_id);
                 break;
             }
 
