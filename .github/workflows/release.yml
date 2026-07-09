@@ -366,13 +366,13 @@ jobs:
           targets: ${{ matrix.rust_target }}
 
       - name: Install maturin
-        run: pip3 install --break-system-packages maturin
+        run: pip3 install --break-system-packages maturin cffi
 
       - name: Build xinfer binary
         run: cargo build --release --target ${{ matrix.rust_target }} --bin xinfer --features "metal"
 
       - name: Build Python wheel
-        run: maturin build --release --features "metal,python"
+        run: ./build.sh --release --features "metal,python"
 
       - name: Package tar.gz
         run: |
