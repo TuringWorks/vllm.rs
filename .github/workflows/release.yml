@@ -349,6 +349,10 @@ jobs:
     name: metal-${{ matrix.npm_target }}
     runs-on: macos-latest
     needs: validate
+    env:
+      # Metal BF16 kernels require macOS 14+ / Metal 3.1. Lower deployment
+      # targets compile successfully but omit __HAVE_BFLOAT__ kernel variants.
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
     strategy:
       fail-fast: false
       matrix:

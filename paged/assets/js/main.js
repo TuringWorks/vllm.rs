@@ -378,10 +378,10 @@ function initDownloads() {
   const XINFER_VER = '0.13.7';
   const DL_BASE = 'https://github.com/guoqingbao/xinfer/releases/download/v' + XINFER_VER + '/';
   const archs = [
-    { sm: 'sm70',  n: '70',  name: 'SM70',  gpu: 'V100',                  cuda: 'CUDA 12', arch: 'x64' },
-    { sm: 'sm75',  n: '75',  name: 'SM75',  gpu: 'T4 / Turing',           cuda: 'CUDA 12', arch: 'x64' },
-    { sm: 'sm80',  n: '80',  name: 'SM80',  gpu: 'A100 / A10',            cuda: 'CUDA 13', arch: 'x64' },
-    { sm: 'sm89',  n: '89',  name: 'SM89',  gpu: 'RTX 4090 / L40',        cuda: 'CUDA 13', arch: 'x64' },
+    { sm: 'sm70',  n: '70',  name: 'SM70',  gpu: 'V100',                  cuda: 'CUDA 12.6', arch: 'x64' },
+    { sm: 'sm75',  n: '75',  name: 'SM75',  gpu: 'T4 / Turing',           cuda: 'CUDA 12.6', arch: 'x64' },
+    { sm: 'sm80',  n: '80',  name: 'SM80',  gpu: 'A100 / A10',            cuda: 'CUDA 12.6', arch: 'x64' },
+    { sm: 'sm89',  n: '89',  name: 'SM89',  gpu: 'RTX 4090 / L40',        cuda: 'CUDA 12.6', arch: 'x64' },
     { sm: 'sm90',  n: '90',  name: 'SM90',  gpu: 'H800 / H200',           cuda: 'CUDA 13', arch: 'x64' },
     { sm: 'sm100', n: '100', name: 'SM100', gpu: 'B100 / B200',           cuda: 'CUDA 13', arch: 'x64' },
     { sm: 'sm120', n: '120', name: 'SM120', gpu: 'RTX 5090 / RTX PRO 6000', cuda: 'CUDA 13', arch: 'x64' },
@@ -407,7 +407,7 @@ function initDownloads() {
       } else {
         const platTag = cpuArch === 'arm64' ? 'manylinux_2_34_aarch64' : 'manylinux_2_34_x86_64';
         fname = a.sm === 'metal'
-          ? 'xinfer-' + XINFER_VER + '-metal-cp38-abi3-macosx_11_0_arm64.whl'
+          ? 'xinfer-' + XINFER_VER + '-metal-cp38-abi3-macosx_14_0_arm64.whl'
           : 'xinfer-' + XINFER_VER + '-' + a.n + '-cp38-abi3-' + platTag + '.whl';
       }
       const el = document.createElement('a');
