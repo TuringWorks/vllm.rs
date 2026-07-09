@@ -1,9 +1,12 @@
 use crate::models::layers::distributed::ReplicatedLinear;
 use crate::models::layers::others::{layer_norm, NormX};
+#[allow(unused)]
 use crate::models::layers::rotary_emb::ApplyRotaryEmbedding;
 use crate::models::layers::VarBuilderX;
 use crate::utils::config::Config;
+#[allow(unused)]
 use candle_core::{DType, Result, Tensor, D};
+#[allow(unused)]
 use std::sync::Arc;
 
 pub struct IndexerConfig {
@@ -26,6 +29,7 @@ pub struct IndexerConfig {
 /// at all practical context lengths due to per-layer indexer overhead).
 ///
 /// Reference: HuggingFace transformers `DeepseekV32Indexer`
+#[allow(unused)]
 pub struct DsaIndexer {
     wq_b: ReplicatedLinear,
     wk: ReplicatedLinear,
