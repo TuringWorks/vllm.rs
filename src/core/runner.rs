@@ -14,6 +14,8 @@ use crate::utils::graph::{
 use crate::utils::guidance::ParserFactory;
 use crate::utils::guided_decoding::{GuidedDecoding, GuidedDecodingRequest};
 use crate::utils::image::compute_image_slice;
+#[cfg(all(feature = "cuda", feature = "graph"))]
+use crate::utils::kvcache_allocator::HYBRID_MAMBA_GRAPH_CAPTURE_MIN_BATCH;
 use crate::utils::logits_processor::{LogitsProcessor, Sampling};
 use crate::utils::progress::ProgressLike;
 #[cfg(feature = "flashinfer")]
@@ -35,7 +37,7 @@ use crate::{
     models::qwen3_moe::Qwen3MoEForCausalLM,
     models::qwen3_vl::Qwen3VLForConditionalGeneration,
     utils::config::{Config, EngineConfig, ModelType, SamplingParams},
-    utils::kvcache_allocator::KVCacheAllocator,
+    utils::kvcache_allocator::{hybrid_mamba_graph_capture_max_batch, KVCacheAllocator},
 };
 use attention_rs::cache;
 #[cfg(feature = "flashinfer")]
@@ -153,9 +155,6 @@ pub struct ModelRunner {
 
 impl ModelRunner {
     // Mamba slots track concurrent sequence states (not KV token blocks).
-    const MAMBA_CACHE_FIXED_CAPACITY: usize = 64;
-    #[cfg(all(feature = "cuda", feature = "graph"))]
-    const GRAPH_CAPTURE_MIN_BATCH: usize = 16;
 
     pub(crate) fn is_mla_model(&self) -> bool {
         matches!(
@@ -362,7 +361,7 @@ impl ModelRunner {
         let allocation = crate::utils::kvcache_allocator::KVCacheAllocation {
             num_gpu_blocks: econfig.num_blocks,
             #[cfg(feature = "cuda")]
-            num_cpu_blocks: (econfig.num_blocks as f32 * econfig.cpu_mem_fold.unwrap_or(0.2))
+            num_cpu_blocks: (econfig.num_blocks as f32 * econfig.cpu_mem_fold.unwrap_or(0.5))
                 as usize,
             #[cfg(not(feature = "cuda"))]
             num_cpu_blocks: 1, // dummy for non-CUDA platform
@@ -380,19 +379,19 @@ impl ModelRunner {
         let mamba_cache_capacity = if is_hybrid_mamba_model {
             econfig
                 .mamba_cache_capacity
-                .unwrap_or_else(|| Self::MAMBA_CACHE_FIXED_CAPACITY.max(econfig.max_num_seqs))
+                .unwrap_or_else(|| hybrid_mamba_graph_capture_max_batch(econfig.max_num_seqs))
+                .min(hybrid_mamba_graph_capture_max_batch(econfig.max_num_seqs))
         } else {
             0
         };
 
         #[cfg(all(feature = "cuda", feature = "graph"))]
         let graph_capture_max_num_seqs = if is_hybrid_mamba_model {
-            std::cmp::min(
-                econfig.max_num_seqs.max(Self::GRAPH_CAPTURE_MIN_BATCH),
-                mamba_cache_capacity.max(1),
-            )
+            mamba_cache_capacity.max(1)
         } else {
-            econfig.max_num_seqs.max(Self::GRAPH_CAPTURE_MIN_BATCH)
+            econfig
+                .max_num_seqs
+                .max(HYBRID_MAMBA_GRAPH_CAPTURE_MIN_BATCH)
         };
 
         #[cfg(all(feature = "cuda", feature = "graph"))]
@@ -479,7 +478,7 @@ impl ModelRunner {
             allocator.init_kv_cache(&allocation, dtype, &device, econfig.pd_config.as_ref())?;
 
         let num_cpu_blocks =
-            (econfig.cpu_mem_fold.unwrap_or(0.2f32) * econfig.num_blocks as f32) as usize;
+            (econfig.cpu_mem_fold.unwrap_or(0.5f32) * econfig.num_blocks as f32) as usize;
         let cpu_tq_cache = allocator.init_cpu_tq_cache(num_cpu_blocks)?;
 
         let (temperature, top_k, top_p) = if econfig.generation_cfg.is_some() {
