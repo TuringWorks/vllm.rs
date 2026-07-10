@@ -39,6 +39,9 @@ pub struct Scheduler {
     cfg: EngineConfig,
     pd_config: Option<PdConfig>,
     is_last_prefill: bool,
+    /// Sequence IDs whose hybrid GDN/Mamba active slots must be released on the
+    /// runner after scheduler-side abort (swap-in failure, etc.).
+    pending_runner_releases: Vec<usize>,
 }
 
 const MIN_NUM_SCHEDULED_REQS: usize = 5;
@@ -56,6 +59,15 @@ const PREFIX_CACHE_RATIO_NORMAL: f32 = 0.65;
 const PREFIX_CACHE_RATIO_PD_SERVER: f32 = 0.8;
 const PREFIX_CACHE_RATIO_PD_CLIENT: f32 = 0.5;
 const PREFIX_CACHE_PRESSURE_EVICT_PERCENT: f32 = 0.1; // evict 10% of prefix cache when under pressure
+
+fn active_sequence_limit(max_num_seqs: usize, mamba_cache_capacity: Option<usize>) -> usize {
+    if let Some(mamba_cap) = mamba_cache_capacity {
+        if mamba_cap > 0 {
+            return mamba_cap;
+        }
+    }
+    std::cmp::max(max_num_seqs, MIN_NUM_SCHEDULED_REQS)
+}
 
 fn build_prefix_cache_config(econfig: &EngineConfig) -> PrefixCacheConfig {
     let enabled = econfig.prefix_cache.unwrap_or(false);
@@ -163,7 +175,21 @@ impl Scheduler {
             cfg: econfig.clone(),
             pd_config: econfig.pd_config.clone(),
             is_last_prefill: false,
+            pending_runner_releases: Vec::new(),
         }
+    }
+
+    pub fn request_runner_release(&mut self, seq_id: usize) {
+        if !self.pending_runner_releases.contains(&seq_id) {
+            self.pending_runner_releases.push(seq_id);
+        }
+    }
+
+    pub fn take_pending_runner_releases(&mut self) -> Vec<usize> {
+        if self.pending_runner_releases.is_empty() {
+            return Vec::new();
+        }
+        std::mem::take(&mut self.pending_runner_releases)
     }
 
     /// Set tool call end token IDs (called by engine after tokenizer is available)
@@ -201,18 +227,7 @@ impl Scheduler {
     }
 
     fn active_sequence_limit(&self) -> usize {
-        fn active_sequence_limit_(
-            max_num_seqs: usize,
-            mamba_cache_capacity: Option<usize>,
-        ) -> usize {
-            if let Some(mamba_cap) = mamba_cache_capacity {
-                if mamba_cap > 0 {
-                    return mamba_cap;
-                }
-            }
-            std::cmp::max(max_num_seqs, MIN_NUM_SCHEDULED_REQS)
-        }
-        active_sequence_limit_(self.cfg.max_num_seqs, self.cfg.mamba_cache_capacity)
+        active_sequence_limit(self.cfg.max_num_seqs, self.cfg.mamba_cache_capacity)
     }
 
     /// Schedule sequences and return their indexes in `running` along with prefill flag
@@ -719,6 +734,9 @@ impl Scheduler {
     }
 
     pub fn cancel(&mut self, seq_id: usize) {
+        // A normal cancellation will release the runner slot itself. Do not
+        // leave a scheduler-side release queued for the same sequence.
+        self.pending_runner_releases.retain(|&id| id != seq_id);
         for i in 0..self.running.len() {
             let seq = &mut self.running[i];
             if seq.id == seq_id {
@@ -901,7 +919,8 @@ impl Scheduler {
 
             let available_kvcache_tokens = self.get_available_kv_tokens();
             if !self.block_manager.can_swap_in(&self.cached[i])
-                || (available_kvcache_tokens - seq_len < MIN_KVCACHE_TOKENS_LEFT_FOR_SWAP)
+                || (available_kvcache_tokens.saturating_sub(seq_len)
+                    < MIN_KVCACHE_TOKENS_LEFT_FOR_SWAP)
             {
                 if !self.running.is_empty() {
                     // Wait for swap in
@@ -935,7 +954,11 @@ impl Scheduler {
             seq.clear_block_table(); //reallocate block table since previous gpu blocks were freed
 
             if let Err(_) = self.block_manager.ensure_allocate(&mut seq) {
-                continue;
+                // Transient: GPU blocks may be available on the next schedule pass.
+                // Keep the swapped CPU KV and GDN slot so swap-in can retry.
+                seq.status = SequenceStatus::Swapped;
+                self.cached.push(seq);
+                break;
             }
 
             // Swap in data from CPU (if swapped out previously)
@@ -945,8 +968,18 @@ impl Scheduler {
                     crate::log_warn!("Seq {} is swapped in for execution!", seq.id);
                 }
                 Err(e) => {
-                    seq.status = SequenceStatus::Finished;
                     crate::log_error!("Seq {} swap in failed: {:?}!", seq.id, e);
+                    self.block_manager.deallocate(&seq);
+                    seq.clear_block_table();
+                    if self.block_manager.has_cpu_swap(seq.id) {
+                        // CPU swap data intact — retry on a later schedule pass.
+                        seq.status = SequenceStatus::Swapped;
+                        self.cached.push(seq);
+                    } else {
+                        // CPU swap state lost — abort and release the GDN slot.
+                        self.request_runner_release(seq.id);
+                    }
+                    break;
                 }
             }
             self.running.push(seq);
